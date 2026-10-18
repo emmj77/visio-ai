@@ -111,6 +111,51 @@ en trait double. Deux mecanismes, mesures sur la page temoin (trait reel : 2 a 4
 
 Cout : plan 188x52 = 616 jetons, capture + analyse 12 a 31 ms.
 
+## Dessiner une forme depuis son MODELE (M6-9)
+
+Un rond de 122 px dans une case de 10x20 px tient sur 12 caracteres et 6 rangees. Dessine a
+partir de la largeur MESUREE de chaque rangee, il sort en rond-point : la corde du haut vaut
+80 % du diametre — c'est vrai geometriquement — donc la barre prend toute la place et les cotes
+n'ont plus ou s'incliner. Et la pointe d'un triangle mesure deja 5 cases sur sa premiere
+rangee : elle sortait en trapeze tronque.
+
+La reponse est de MODELISER puis de dessiner le modele (`src/perceive/forme.{h,cpp}`) :
+
+- `analyser_forme` rend une **ellipse** (centre, demi-axes, erreur moyenne en px) ou un
+  **polygone** (coins detectes par un angle > 32 deg, erreur moyenne a la polyligne). Mesures
+  sur la page temoin : rond -> ellipse err 0,07 px ; triangle -> polygone 3 sommets err 4,17 px
+  (la meme forme en ellipse donne 15,25 px).
+- `dessiner_forme` dessine depuis le modele :
+  - ellipse : corde par rangee (aucune vibration possible), chapeau canonique
+    `.-"""-.` en haut et `` `-...-' `` en bas, cotes par pente exacte ;
+  - polygone : bord gauche et bord droit donnes par les aretes a chaque rangee — donc
+    SYMETRIE par construction — base en barre `,____.`, pointe forcee en `/\`.
+
+Regles de l'ASCII art appliquees, chacune corrige un defaut vu a l'ecran :
+
+| regle | defaut corrige |
+|---|---|
+| un cote ne bouge que d'une case par rangee | la ligne se coupe sur une pente de 1,3 case/ligne |
+| caractere d'apres la pente en FRACTION de case (0,35) | cote gauche en `/`, cote droit en `|` sur le meme rond |
+| position par `floor` (la case qui contient le bord) | arrondi : les deux cotes decales d'une demi-case |
+| chapeau plat si la rangee fait >= 50 % de la largeur max | pointe de triangle prise pour un chapeau |
+| la pointe d'un polygone est un POINT (`/\`) | sommet ouvert, trapeze tronque |
+
+Pieges trouves en lisant les coordonnees exactes (`VISIO_DEBUG_PLAN=1` imprime chaque caractere
+avec sa colonne, `VISIO_DEBUG_FORME=1` le modele et les rangees) :
+
+- `t = (b.y - a.y) > 1e-9 ? ... : 0` laissait `t` a zero sur une arete qui MONTE : un cote du
+  triangle restait colle en bas ;
+- la rangee du chapeau etait sautee quand son centre tombait hors de l'ellipse : rond sans
+  couvercle ;
+- un trait d'encre `-` bloquait le caractere du contour (la case n'etait pas « libre ») : la
+  pointe perdait un cote ;
+- le nettoyage « un caractere par run » tournait APRES les formes et effacait le second
+  caractere de `/\` : il appartient a la couche d'encre, il passe avant.
+
+`tests/unit_forme.cpp` juge le trace sur une GRILLE NUE (15 assertions) : sur une capture, on
+confond un bug de dessin avec un decalage de lecture de la sortie. `ctest` : 10/10.
+
 ## Le diagnostic qui compte
 
 **La comparaison n'est pas le probleme, la decoupe l'est.** Trois essais de comparaison de
