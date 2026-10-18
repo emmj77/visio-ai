@@ -36,6 +36,10 @@ public:
     // trompe pas, et elle vaut de l'or : un terminal, un tableau, du code.
     bool monospace(int taille);
 
+    // Avance d'une lettre à cette taille, en pixels. Sur une chasse fixe, c'est le pas du
+    // texte : il donne la taille au pixel près, sans balayage.
+    int avance(int taille);
+
     const std::string& nom() const noexcept { return nom_; }
     bool valide() const noexcept { return face_ != nullptr; }
 
@@ -75,7 +79,11 @@ private:
 
     // Identifie (police, taille) sur un échantillon de lettres, et le retient.
     // `monospace` restreint la recherche aux polices à chasse fixe.
-    void identifier(const std::vector<Glyphe>& echantillon, int hauteur, bool monospace = false);
+    void identifier(const std::vector<Glyphe>& echantillon, int hauteur, bool monospace = false,
+                    int pas = 0);
+
+    // Ouvre (une fois) la police `p` et la rend utilisable.
+    Fonte* fonte_pour(size_t p);
 
     // Vrai si la police `p` est à chasse fixe (calculé une fois par police).
     bool est_monospace(size_t p);

@@ -49,7 +49,9 @@ static int justesse(const std::string& lu, const std::string& attendu) {
 
 int main() {
     const char* fichiers[] = {"tests/data/texte_11.raw", "tests/data/texte_13.raw",
-                              "tests/data/texte_16.raw"};
+                              "tests/data/texte_16.raw", "tests/data/texte_mono_14.raw"};
+    // Pas de témoin monospace à 12 px : à cette taille les lettres se soudent, le pas
+    // n'est plus régulier et le détecteur ne voit rien. Constaté, pas supposé.
     const std::string attendu = "Enregistrer sous...";
 
     Lecteur lecteur;
@@ -72,7 +74,10 @@ int main() {
         {
             const auto gs = extraire_glyphes(f, lignes[0], fond);
             int pas = 0;
-            CHECK(!bande_monospace(gs, &pas));
+            const bool mono = bande_monospace(gs, &pas);
+            const bool attendu_mono = std::string(chemin).find("mono") != std::string::npos;
+            CHECK(mono == attendu_mono);
+            if (mono) std::printf("   chasse fixe, pas de %d px\n", pas);
         }
 
         const auto t1 = std::chrono::steady_clock::now();

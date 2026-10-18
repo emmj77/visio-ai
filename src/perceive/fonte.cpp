@@ -295,20 +295,34 @@ bool Fonte::monospace(int taille) {
     return avance > 0;
 }
 
+int Fonte::avance(int taille) {
+    if (!face_) return 0;
+    FT_Face f = (FT_Face)face_;
+    if (FT_Set_Pixel_Sizes(f, 0, (FT_UInt)taille) != 0) return 0;
+    if (FT_Load_Char(f, (FT_ULong)'i', FT_LOAD_DEFAULT) != 0) return 0;
+    return (int)(f->glyph->advance.x >> 6);
+}
+
+Fonte* Lecteur::fonte_pour(size_t p) {
+    if (p >= polices_.size()) return nullptr;
+    while (ouvertes_.size() <= p) ouvertes_.push_back(std::make_unique<Fonte>());
+    Fonte& f = *ouvertes_[p];
+    if (!f.valide() && !f.ouvrir(polices_[p])) return nullptr;
+    return &f;
+}
+
 bool Lecteur::est_monospace(size_t p) {
     auto it = mono_.find(p);
     if (it != mono_.end()) return it->second;
     if (p >= polices_.size()) return false;
 
-    while (ouvertes_.size() <= p) ouvertes_.push_back(std::make_unique<Fonte>());
-    Fonte& f = *ouvertes_[p];
-    if (!f.valide()) f.ouvrir(polices_[p]);
-    const bool r = f.valide() && f.monospace(14);
+    Fonte* f = fonte_pour(p);
+    const bool r = f && f->monospace(14);
     mono_[p] = r;
     return r;
 }
 
-void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur, bool monospace) {
+void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur, bool monospace, int pas) {
     if (ech.empty()) return;
 
     // D'abord la taille avec la première police : la taille change peu le dessin d'une
@@ -323,6 +337,25 @@ void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur, bool monos
 
     int taille_0 = 0;
     float score_0 = 1e9f;
+
+    // Chasse fixe : le pas du texte EST l'avance de la police. Une équation, pas un
+    // balayage — et la taille tombe juste au pixel près.
+    if (monospace && pas > 0) {
+        if (Fonte* f0 = fonte_pour(p0)) {
+            int ecart_min = 1 << 30;
+            for (int t = 6; t <= 40; ++t) {
+                const int a = f0->avance(t);
+                if (!a) continue;
+                const int d = std::abs(a - pas);
+                if (d < ecart_min) { ecart_min = d; taille_0 = t; }
+                if (d == 0) break;
+            }
+            if (ecart_min > 1) taille_0 = 0;    // le pas ne vient pas de cette police
+            else score_0 = 1e9f;                 // la taille est trouvée : reste la police
+        }
+    }
+
+    if (!taille_0)
     for (int t = std::max(6, hauteur); t <= (int)(1.55f * (float)hauteur); ++t) {
         const Table* tab = table_pour(p0, t);
         if (!tab) continue;
@@ -388,7 +421,9 @@ void Lecteur::calibrer(const Frame& f, const std::vector<LigneTexte>& lignes, ui
         ech.insert(ech.end(), gs.begin(), gs.end());
     }
     if (ech.empty()) return;
-    identifier(ech, hauteur, bande_monospace(ech));
+    int pas = 0;
+    const bool mono = bande_monospace(ech, &pas);
+    identifier(ech, hauteur, mono, pas);
 
     // Une typo qu'on n'explique pas bien ne doit pas être imposée : mieux vaut laisser
     // chaque bande se débrouiller (plus lent, mais juste) que lire faux partout.
@@ -419,7 +454,9 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
             else
                 trouvees_[hauteur] = {police_, taille};
         } else {
-            identifier(glyphes, hauteur, bande_monospace(glyphes));
+            int pas = 0;
+            const bool mono = bande_monospace(glyphes, &pas);
+            identifier(glyphes, hauteur, mono, pas);
         }
     }
     auto it = trouvees_.find(hauteur);
