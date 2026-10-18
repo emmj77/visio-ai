@@ -32,6 +32,10 @@ public:
     // Rend un caractère à `taille` pixels, coupé à son encre, intensités normalisées.
     bool rendre(char c, int taille, Glyphe& sortie);
 
+    // Une monospace donne à « i » et à « m » la même avance. C'est une signature qui ne
+    // trompe pas, et elle vaut de l'or : un terminal, un tableau, du code.
+    bool monospace(int taille);
+
     const std::string& nom() const noexcept { return nom_; }
     bool valide() const noexcept { return face_ != nullptr; }
 
@@ -70,7 +74,12 @@ private:
     const Table* table_pour(size_t indice_police, int taille);
 
     // Identifie (police, taille) sur un échantillon de lettres, et le retient.
-    void identifier(const std::vector<Glyphe>& echantillon, int hauteur);
+    // `monospace` restreint la recherche aux polices à chasse fixe.
+    void identifier(const std::vector<Glyphe>& echantillon, int hauteur, bool monospace = false);
+
+    // Vrai si la police `p` est à chasse fixe (calculé une fois par police).
+    bool est_monospace(size_t p);
+    std::unordered_map<size_t, bool> mono_;
 
     size_t police_ = 0;
     bool   police_fixee_ = false;
@@ -88,6 +97,10 @@ private:
     std::string police_choisie_;
     int         taille_choisie_ = 0;
 };
+
+// Une bande est monospace quand les lettres se suivent toujours du même pas. `pas` sort
+// la distance entre deux lettres, en pixels.
+bool bande_monospace(const std::vector<Glyphe>& glyphes, int* pas = nullptr);
 
 // Liste des polices installées, les plus probables d'abord : les polices d'interface
 // courantes passent avant le reste, pour que l'identification s'arrête vite.

@@ -4,6 +4,7 @@
 // Les images témoins sont rendues par le même moteur qu'une application (FreeType), donc
 // c'est exactement le cas réel : un texte à l'écran, sans rien savoir de sa police.
 #include "perceive/fonte.h"
+#include "perceive/glyph.h"
 #include "perceive/text_lines.h"
 
 #include <chrono>
@@ -65,6 +66,14 @@ int main() {
         const auto lignes = lignes_de_texte(f, fond);
         CHECK(!lignes.empty());
         if (lignes.empty()) continue;
+
+        // Détecteur de chasse fixe : ce texte est proportionnel, il ne doit pas passer
+        // pour du monospace (sinon la recherche se restreint aux mauvaises polices).
+        {
+            const auto gs = extraire_glyphes(f, lignes[0], fond);
+            int pas = 0;
+            CHECK(!bande_monospace(gs, &pas));
+        }
 
         const auto t1 = std::chrono::steady_clock::now();
         const std::string lu = lecteur.lire(f, lignes[0], fond);

@@ -253,15 +253,78 @@ Glyphe decouper(const Glyphe& g, int x0, int x1) {
 
 } // namespace
 
-void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur) {
+bool bande_monospace(const std::vector<Glyphe>& glyphes, int* pas) {
+    if (glyphes.size() < 6) return false;
+    std::unordered_map<int, int> hist;      // pas -> combien de fois
+    for (size_t i = 0; i + 1 < glyphes.size(); ++i) {
+        const int d = glyphes[i + 1].rect.x - glyphes[i].rect.x;
+        if (d > 0 && d < 64) ++hist[d];
+    }
+    if (hist.empty()) return false;
+
+    int mode = 0, vus = 0, total = 0;
+    for (const auto& [d, n] : hist) {
+        total += n;
+        if (n > vus) { vus = n; mode = d; }
+    }
+    if (pas) *pas = mode;
+
+    // Deux lettres voisines sont à un pas ; un espace fait deux pas. On compte les deux.
+    int reguliers = 0, distincts = 0;
+    for (const auto& [d, n] : hist) {
+        if (std::abs(d - mode) <= 1 || std::abs(d - 2 * mode) <= 1) reguliers += n;
+        if (n >= 2) ++distincts;
+    }
+    // Deux conditions, sinon le texte proportionnel passe pour du monospace : presque
+    // tous les écarts au pas, et très peu de valeurs d'écart différentes.
+    return reguliers * 20 >= total * 17 && distincts <= 4;
+}
+
+bool Fonte::monospace(int taille) {
+    if (!face_) return false;
+    FT_Face f = (FT_Face)face_;
+    if (FT_Set_Pixel_Sizes(f, 0, (FT_UInt)taille) != 0) return false;
+
+    long avance = -1;
+    for (char c : {'i', 'l', 'm', 'W', 'M', '.'}) {
+        if (FT_Load_Char(f, (FT_ULong)(unsigned char)c, FT_LOAD_DEFAULT) != 0) continue;
+        const long a = f->glyph->advance.x >> 6;
+        if (avance < 0) avance = a;
+        else if (a != avance) return false;   // « i » et « m » n'ont pas la même avance
+    }
+    return avance > 0;
+}
+
+bool Lecteur::est_monospace(size_t p) {
+    auto it = mono_.find(p);
+    if (it != mono_.end()) return it->second;
+    if (p >= polices_.size()) return false;
+
+    while (ouvertes_.size() <= p) ouvertes_.push_back(std::make_unique<Fonte>());
+    Fonte& f = *ouvertes_[p];
+    if (!f.valide()) f.ouvrir(polices_[p]);
+    const bool r = f.valide() && f.monospace(14);
+    mono_[p] = r;
+    return r;
+}
+
+void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur, bool monospace) {
     if (ech.empty()) return;
 
     // D'abord la taille avec la première police : la taille change peu le dessin d'une
     // police, la police change tout.
+    // Pour une bande monospace, on mesure la taille avec une monospace : c'est la seule
+    // façon d'être au bon pixel sur une chasse fixe.
+    size_t p0 = 0;
+    if (monospace) {
+        while (p0 < polices_.size() && p0 < 60 && !est_monospace(p0)) ++p0;
+        if (p0 >= polices_.size() || p0 >= 60) p0 = 0;
+    }
+
     int taille_0 = 0;
     float score_0 = 1e9f;
     for (int t = std::max(6, hauteur); t <= (int)(1.55f * (float)hauteur); ++t) {
-        const Table* tab = table_pour(0, t);
+        const Table* tab = table_pour(p0, t);
         if (!tab) continue;
         const float s = noter(*tab, ech, 0);
         if (s < score_0) { score_0 = s; taille_0 = t; }
@@ -275,6 +338,7 @@ void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur) {
     size_t meilleure_police = 0;
     float meilleur_score = score_0;
     for (size_t p = 0; p < polices_.size() && p < 16; ++p) {
+        if (monospace && !est_monospace(p)) continue;
         const Table* tab = table_pour(p, taille_0);
         if (!tab) continue;
         const float s = noter(*tab, ech, 0);
@@ -324,7 +388,7 @@ void Lecteur::calibrer(const Frame& f, const std::vector<LigneTexte>& lignes, ui
         ech.insert(ech.end(), gs.begin(), gs.end());
     }
     if (ech.empty()) return;
-    identifier(ech, hauteur);
+    identifier(ech, hauteur, bande_monospace(ech));
 
     // Une typo qu'on n'explique pas bien ne doit pas être imposée : mieux vaut laisser
     // chaque bande se débrouiller (plus lent, mais juste) que lire faux partout.
@@ -355,7 +419,7 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
             else
                 trouvees_[hauteur] = {police_, taille};
         } else {
-            identifier(glyphes, hauteur);
+            identifier(glyphes, hauteur, bande_monospace(glyphes));
         }
     }
     auto it = trouvees_.find(hauteur);
