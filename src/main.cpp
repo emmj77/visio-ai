@@ -15,6 +15,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
+#include <X11/keysym.h>
 
 #include <chrono>
 #include <cstdio>
@@ -28,6 +29,7 @@ bool g_lire = false;       // --lire : reconnaître les caractères par leur for
 bool g_etiquettes = false; // --etiquettes : nommer chaque élément par son texte
 bool g_cibles = false;     // --cibles : les cibles cliquables, un mot = une cible
 std::string g_clic;        // --clic <texte> : cliquer la cible dont l'etiquette contient ce texte
+std::string g_taper;       // --taper <texte> : ecrire au clavier, caractere par caractere
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -236,6 +238,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--etiquettes") == 0) { g_etiquettes = true; g_lire = true; }
         if (std::strcmp(argv[i], "--cibles") == 0) { g_cibles = true; g_lire = true; }
         if (std::strcmp(argv[i], "--clic") == 0 && i + 1 < argc) { g_clic = argv[++i]; g_cibles = true; g_lire = true; }
+        if (std::strcmp(argv[i], "--taper") == 0 && i + 1 < argc) g_taper = argv[++i];
     }
 
     Display* d = XOpenDisplay(nullptr);
@@ -243,6 +246,35 @@ int main(int argc, char** argv) {
         VISIO_ERROR("impossible d'ouvrir le serveur X (%s)", XDisplayName(nullptr));
         return 1;
     }
+    // --taper : le geste clavier. Les touches partent vers la fenetre qui a le focus ; sous
+    // Xvfb sans gestionnaire de fenetres, c'est celle qui se trouve sous le pointeur.
+    // L'agent ecrit donc sans lire un seul pixel.
+    if (!g_taper.empty()) {
+        int n = 0;
+        for (unsigned char ch : g_taper) {
+            std::string nom;
+            if (ch == ' ') nom = "space";
+            else if (ch == '\n') nom = "Return";
+            else if (ch == '\t') nom = "Tab";
+            else nom = std::string(1, (char)ch);
+            const KeySym ks = XStringToKeysym(nom.c_str());
+            if (ks == NoSymbol) continue;
+            const KeyCode kc = XKeysymToKeycode(d, ks);
+            if (!kc) continue;
+            const bool maj = (ch >= 'A' && ch <= 'Z');
+            const KeyCode sh = maj ? XKeysymToKeycode(d, XK_Shift_L) : 0;
+            if (maj) XTestFakeKeyEvent(d, sh, True, CurrentTime);
+            XTestFakeKeyEvent(d, kc, True, CurrentTime);
+            XTestFakeKeyEvent(d, kc, False, CurrentTime);
+            if (maj) XTestFakeKeyEvent(d, sh, False, CurrentTime);
+            XFlush(d);
+            ++n;
+        }
+        std::printf("taper        %d touches envoyees\n", n);
+        XCloseDisplay(d);
+        return 0;
+    }
+
 
     if (argc >= 2 && std::strcmp(argv[1], "--regions") == 0) {
         const visio::ScreenInfo si = visio::probe_screen(d);
