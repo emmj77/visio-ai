@@ -100,7 +100,8 @@ private:
     std::vector<std::string> polices_;                 // chemins de polices candidates
     std::vector<std::unique_ptr<Fonte>> ouvertes_;     // une FT_Face par police ouverte
     std::unordered_map<uint64_t, Table> tables_;       // clé : indice police, taille
-    std::unordered_map<int, std::pair<size_t, int>> trouvees_;   // hauteur -> (police, taille)
+    std::unordered_map<int, std::pair<size_t, int>> trouvees_;   // (hauteur, densité) -> (police, taille)
+    int cle_cache_ = 0;   // clé à laquelle `identifier` inscrit son résultat
 
     std::string police_choisie_;
     int         taille_choisie_ = 0;

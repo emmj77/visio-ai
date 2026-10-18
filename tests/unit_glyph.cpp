@@ -49,12 +49,12 @@ static int justesse(const std::string& lu, const std::string& attendu) {
 
 int main() {
     const char* fichiers[] = {"tests/data/texte_11.raw", "tests/data/texte_13.raw",
-                              "tests/data/texte_16.raw", "tests/data/texte_mono_14.raw"};
+                              "tests/data/texte_16.raw", "tests/data/texte_mono_14.raw",
+                              "tests/data/texte_gras_14.raw", "tests/data/texte_monogras_14.raw"};
     // Pas de témoin monospace à 12 px : à cette taille les lettres se soudent, le pas
     // n'est plus régulier et le détecteur ne voit rien. Constaté, pas supposé.
     const std::string attendu = "Enregistrer sous...";
 
-    Lecteur lecteur;
     std::printf("polices candidates : %zu\n", polices_candidates().size());
 
     for (const char* chemin : fichiers) {
@@ -75,11 +75,18 @@ int main() {
             const auto gs = extraire_glyphes(f, lignes[0], fond);
             int pas = 0;
             const bool mono = bande_monospace(gs, &pas);
-            const bool attendu_mono = std::string(chemin).find("mono") != std::string::npos;
-            CHECK(mono == attendu_mono);
+            // Le gras monospace n'est pas détectable par le pas (les lettres se touchent) :
+            // on ne l'exige que sur les témoins non gras.
+            const std::string nom = chemin;
+            if (nom.find("gras") == std::string::npos) {
+                const bool attendu_mono = nom.find("mono") != std::string::npos;
+                CHECK(mono == attendu_mono);
+            }
             if (mono) std::printf("   chasse fixe, pas de %d px\n", pas);
         }
 
+        // Un Lecteur par témoin : chaque image est une fenêtre différente, avec sa typo.
+        Lecteur lecteur;
         const auto t1 = std::chrono::steady_clock::now();
         const std::string lu = lecteur.lire(f, lignes[0], fond);
         const double ms = std::chrono::duration<double, std::milli>(

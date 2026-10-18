@@ -5,6 +5,8 @@
 #include FT_FREETYPE_H
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -68,12 +70,17 @@ std::vector<std::string> polices_candidates() {
         }
     }
 
+    // Le gras d'une famille doit être essayé JUSTE APRÈS son régulier, sinon il tombe
+    // après quatre cents polices et n'est jamais atteint : un titre en gras ne se lirait
+    // jamais. D'où le rang par famille, puis par graisse.
     auto rang = [](const std::string& chemin) {
         const std::string n = minuscule(std::filesystem::path(chemin).stem().string());
+        const bool gras = est_gras_ou_italique(n);
+        const bool italique = n.find("italic") != std::string::npos || n.find("oblique") != std::string::npos;
         for (size_t i = 0; i < sizeof(PREFEREES) / sizeof(PREFEREES[0]); ++i)
             if (n.find(PREFEREES[i]) != std::string::npos)
-            return est_gras_ou_italique(n) ? 200 + (int)i : (int)i;
-        return est_gras_ou_italique(n) ? 1500 : 1000;
+                return (int)i * 4 + (italique ? 2 : 0) + (gras ? 1 : 0);
+        return gras ? 4000 : 2000;
     };
     std::stable_sort(trouvees.begin(), trouvees.end(),
                      [&](const std::string& a, const std::string& b) { return rang(a) < rang(b); });
@@ -370,13 +377,37 @@ void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur, bool monos
     // Puis la police, à cette taille.
     size_t meilleure_police = 0;
     float meilleur_score = score_0;
-    for (size_t p = 0; p < polices_.size() && p < 16; ++p) {
+    for (size_t p = 0; p < polices_.size() && p < 24; ++p) {
         if (monospace && !est_monospace(p)) continue;
         const Table* tab = table_pour(p, taille_0);
         if (!tab) continue;
         const float s = noter(*tab, ech, 0);
+        if (std::getenv("VISIO_DEBUG"))
+            std::fprintf(stderr, "  [typ] %-28s t=%d score=%.3f\n",
+                         std::filesystem::path(polices_[p]).stem().c_str(), taille_0, s);
         if (s < meilleur_score) { meilleur_score = s; meilleure_police = p; }
-        if (meilleur_score < 0.06f) break;   // assez sûr : inutile d'essayer les suivantes
+        if (meilleur_score < 0.02f) break;   // quasi identique : inutile d'essayer les suivantes
+    }
+
+    // Hypothèse inverse : un monospace GRAS n'a plus un pas régulier (les lettres se
+    // touchent), donc il n'est pas détecté comme monospace. On essaie quand même les
+    // chasses fixes avant de conclure.
+    if (!monospace && meilleur_score > 0.10f) {
+        for (size_t p = 0; p < polices_.size() && p < 40; ++p) {
+            if (!est_monospace(p)) continue;
+            const Table* tab = table_pour(p, taille_0);
+            if (!tab) continue;
+            const float s = noter(*tab, ech, 0);
+            if (s < meilleur_score) { meilleur_score = s; meilleure_police = p; }
+        }
+    }
+
+    // La chasse fixe est une hypothèse, pas une certitude : un texte gras la déclenche à
+    // tort. Si aucune police à chasse fixe n'explique la bande, on recommence sans
+    // l'hypothèse — plutôt que de lire faux avec la mauvaise contrainte.
+    if (monospace && meilleur_score > 0.15f) {
+        identifier(ech, hauteur, false, 0);
+        return;
     }
 
     // Enfin la taille, pour la police retenue : un pixel d'écart fait passer un « s » pour
@@ -393,7 +424,7 @@ void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur, bool monos
     score_ = best;
     police_ = meilleure_police;
     police_fixee_ = true;
-    trouvees_[hauteur] = {meilleure_police, taille};
+    trouvees_[cle_cache_ ? cle_cache_ : hauteur] = {meilleure_police, taille};
     police_choisie_ = polices_[meilleure_police];
     taille_choisie_ = taille;
 }
@@ -434,11 +465,30 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
     const auto glyphes = extraire_glyphes(f, ligne, fond);
     if (glyphes.empty()) return {};
 
-    // 1. la typo de la fenêtre est-elle connue ? Sinon on l'apprend sur cette bande.
+    // 1. La typo de cette hauteur est-elle déjà connue ET explique-t-elle cette bande ?
+    //    La même hauteur peut porter deux textes différents (un titre en gras de 17 px et
+    //    du texte courant de 17 px) : on vérifie avant de faire confiance au cache.
+    // Clé du cache : la hauteur ET la densité d'encre. Un titre en gras de 17 px et du
+    // texte courant de 17 px ont la même hauteur mais pas la même graisse : sans la
+    // densité, le second hériterait de la typo du premier et se lirait faux.
+    int encre = 0, cases = 0;
+    for (const auto& g : glyphes)
+        for (int i = 0; i < (int)g.w * (int)g.h; ++i) {
+            const int x = i % g.w, y = i / g.w;
+            if (g.px[y * GP_W + x] > 128) ++encre;
+            ++cases;
+        }
+    const float densite = cases ? (float)encre / (float)cases : 0.0f;
     const int hauteur = ligne.rect.h;
-    if (!trouvees_.count(hauteur)) {
+    const int cle = hauteur * 1000 + (int)(densite * 100.0f);
+    bool sur = false;
+    if (auto it = trouvees_.find(cle); it != trouvees_.end()) {
+        const Table* tab = table_pour(it->second.first, it->second.second);
+        sur = tab && noter(*tab, glyphes, 0) <= 0.10f;
+    }
+    cle_cache_ = cle;   // `identifier` inscrira son résultat sous cette clé
+    if (!sur) {
         if (police_fixee_) {
-            // Police connue : il ne reste que la taille à trouver, et c'est rapide.
             int taille = hauteur;
             float meilleur = 1e9f;
             for (int t = std::max(6, hauteur - 1); t <= (int)(1.55f * (float)hauteur) + 1; ++t) {
@@ -447,19 +497,21 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
                 const float s = noter(*tab, glyphes, 0);
                 if (s < meilleur) { meilleur = s; taille = t; }
             }
-            // La typo de la fenêtre ne suffit pas toujours : un titre en gras, une bande
-            // d'une autre police. Si elle n'explique pas cette hauteur, on re-cherche.
-            if (meilleur > 0.15f)
-                identifier(glyphes, hauteur);
-            else
-                trouvees_[hauteur] = {police_, taille};
+            if (meilleur > 0.15f) {
+                int pas = 0;
+                const bool mono = bande_monospace(glyphes, &pas);
+                identifier(glyphes, hauteur, mono, pas);
+            } else {
+                trouvees_[cle] = {police_, taille};
+            }
         } else {
             int pas = 0;
             const bool mono = bande_monospace(glyphes, &pas);
             identifier(glyphes, hauteur, mono, pas);
         }
     }
-    auto it = trouvees_.find(hauteur);
+    auto it = trouvees_.find(cle);
+    if (it == trouvees_.end()) return std::string(glyphes.size(), '?');
 
     const Table* table = table_pour(it->second.first, it->second.second);
     if (!table) return std::string(glyphes.size(), '?');
@@ -489,7 +541,9 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
             d_deux *= 0.5f;
         }
 
-        const bool un_vaut = c && d_un <= 0.20f;
+        // 0,30 plutôt que 0,20 : au-delà, mieux vaut rendre la lettre la plus proche que
+        // perdre l'information. Un « ? » n'apprend rien à qui lit.
+        const bool un_vaut = c && d_un <= 0.30f;
         const bool deux_vaut = a && b && d_deux <= 0.20f && d_deux < 0.85f * d_un;
         if (deux_vaut) {
             out += a;
