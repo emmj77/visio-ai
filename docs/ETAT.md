@@ -185,6 +185,76 @@ decoupes differentes, donc deux formes non comparables.** C'est ce qui produit �
    FreeType augmente (tailles 8-24, phases sous-pixel, graisses, flous). 20 000 parametres
    suffisent, moins d'une milliseconde CPU. Il classe ; il ne decoupe pas.
 
+## M6-10 — LE MINIMUM : BOITES + ECRITURE (18/10)
+
+Le plan ne dessine plus rien : il rend les boites, leur identifiant et **ce qui est ecrit dedans**.
+Le texte vient de tesseract (binaire, `fra+eng`, deja installe sur la machine).
+
+    plan         94x26 cases de 20x40 px  12 cibles  3 avec texte
+    cible        id     genre      position        texte
+                 15f    bouton      46,411 118x30   Valider
+                 2b5    texte      190,91   60x23   Envoyer
+                 f1b    texte        6,91  178x23   Moussa Diallo
+
+**Ce que ca remplace, et pourquoi.** Le lecteur maison (FreeType + comparateur de glyphes) rendait
+« Va][der » pour « Valider », « Yr <V \L » pour « booeba ». Tesseract rend les deux exactement. Le
+comparateur, la palette de glyphes, le squelette, les contours, la couche d'encre : supprimes
+(563 + 231 + 323 lignes de code, plus les blocs de `main.cpp` qui les appelaient).
+
+**Mesures qui ont decide de la forme :**
+
+- **Un appel par zone coutait 2 337 ms** pour 10 zones : le demarrage de tesseract domine. Les
+  zones sont donc EMPILEES dans une image (bande blanche de 12 px entre elles) et lues en UN appel :
+  **564 ms**. Chaque ligne retrouve sa zone par son ordonnee.
+- **Filtre de confiance (55)** : sans lui, un rond se lit « PO / NE » et un triangle « aN ». Une
+  ligne n'est gardee qu'avec deux lettres ET la confiance du moteur.
+- **Le clic et la frappe sont deux evenements separes** : sans attente, la frappe part avant que le
+  champ ait le focus et se perd (champ vide). 150 ms apres le clic.
+- **3 ms par touche perd des lettres** (8 tapees, 5 arrivees) ; **12 ms** les rend toutes. Mesure
+  sur le champ de la page temoin.
+- **Ctrl+A avant d'ecrire** : la semantique d'un `input_text` est de REMPLACER le contenu.
+- **`--verbose`** : les diagnostics de mesure sont muets par defaut. Ils pesaient 8 ko sur un plan
+  de 3 ko, et faisaient depasser le plafond de retour d'un outil (4 ko) — le DESSIN, c'est-a-dire
+  les boutons, etait tronque.
+
+**Les deux gestes**, par l'identifiant que le plan affiche (un prefixe suffit) :
+
+    --clic <id>              clic au centre de la cible ; pointeur et focus RENDUS
+    --ecrire <id> <texte>    clic dans le champ, Ctrl+A, frappe ; pointeur et focus RENDUS
+
+**Ce que le plan ne fait pas encore bien** : une ligne d'URL de 1870 px se lit « &é > G D
+file:///nome/moussa/... » (icones prises pour des lettres) ; le champ d'une seule rangee doit
+montrer « [f1b texte] » parce qu'un cadre mangerait sa ligne ; le texte d'une boite plus etroite
+que son texte deborde (mesure : « Envoyer » dans 6 cases).
+
+## Commandes
+
+    ./build/visio --win Firefox --plan             LE PLAN : boites + ecriture (defaut 10 px)
+    ./build/visio --win Firefox --plan 20          moins fin, 3,4 ko (tient dans un retour d'outil)
+    ./build/visio --win Firefox --texte            tout le texte de la fenetre, deux passes
+    ./build/visio --win Firefox --clic 15f         cliquer une cible du plan
+    ./build/visio --win Firefox --ecrire f1b "x"   ecrire dans un champ du plan
+    ./build/visio --win Firefox --boites           les cadres fermes (cote_min, aire_min)
+    ./build/visio --win Firefox --dump "x,y,w,h /tmp/z.ppm"   les pixels d'une zone
+    ./build/visio --win Firefox --verbose          les diagnostics de mesure
+    ./build/visio --taper "bonjour"                frappe au clavier, sans rien lire
+
+    ctest --test-dir build                         9 cibles (dont unit_ocr), 296 assertions
+
+## Les outils de l'agent
+
+Deux plugins Hermes, actives, effectifs a la session suivante :
+
+    ~/.hermes/plugins/visio/    visio_plan(window, pas) | visio_clic(cible) | visio_input_text(cible, texte)
+    ~/.hermes/plugins/ocr/      ocr_image(chemin, langue, psm) | ocr_ecran(fenetre, langue)
+
+Et, cote LA (VM_LA), quatre tools au registre, corps dans `config/tools/core/` :
+
+    3263 read_text_on_screen   le texte affiche dans une fenetre (OCR, ~1,2 s)
+    3264 see_page              le plan (boites, identifiants, ecriture)
+    3265 click_target          cliquer une cible du plan
+    3266 type_into             ecrire dans un champ du plan (texte par stdin)
+
 ## Commandes
 
     ./build/visio --win Firefox --ascii            le plan : encre + structure, 1 car = 10 px
