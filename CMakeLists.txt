@@ -22,6 +22,8 @@ pkg_check_modules(XFIXES  REQUIRED IMPORTED_TARGET xfixes)
 add_library(visio_core STATIC
   src/capture/screen_info.cpp
   src/capture/damage_watch.cpp
+  src/core/tile_diff.cpp
+  src/perceive/windows.cpp
 )
 target_include_directories(visio_core PUBLIC src)
 target_link_libraries(visio_core PUBLIC
@@ -47,6 +49,15 @@ add_test(NAME unit_rect COMMAND unit_rect)
 add_executable(unit_merge tests/unit_merge.cpp)
 target_link_libraries(unit_merge PRIVATE visio_core)
 add_test(NAME unit_merge COMMAND unit_merge)
+
+add_executable(unit_tile_diff tests/unit_tile_diff.cpp)
+target_link_libraries(unit_tile_diff PRIVATE visio_core)
+add_test(NAME unit_tile_diff COMMAND unit_tile_diff)
+
+add_executable(integration_windows tests/integration_windows.cpp)
+target_link_libraries(integration_windows PRIVATE visio_core)
+add_test(NAME integration_windows COMMAND integration_windows)
+set_tests_properties(integration_windows PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(integration_damage tests/integration_damage.cpp)
 target_link_libraries(integration_damage PRIVATE visio_core)
