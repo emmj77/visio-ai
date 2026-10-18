@@ -126,6 +126,20 @@ std::vector<Glyphe> extraire_glyphes(const Frame& f, const LigneTexte& ligne, ui
         const uint32_t* p = f.px.data() + (size_t)(y - f.region.y) * f.region.w + (z.x - f.region.x);
         for (int x = 0; x < z.w; ++x) force_max = std::max(force_max, force_encre(p[x], fr, fg, fb));
     }
+    // Le seuil décide si deux lettres se touchent, et il ne peut pas être absolu : à 11 px
+    // l'encre est faible, à 17 px elle est pleine. Mesuré sur une bande réelle de 17 px :
+    // à 15 % du contraste, les halos d'antialiasing comptent comme de l'encre et soudent
+    // des paires de lettres (groupes de 15-17 px) ; à 40 %, chaque lettre retrouve sa
+    // propre colonne (groupes de 7 px, 30 % de colonnes de fond contre 25 %).
+    // Deux besions différents, un seul seuil — c'est le défaut identifié :
+    //  - POUR DÉCOUPER, il faut un seuil haut : à 15 % du contraste, les halos
+    //    d'antialiasing comptent comme de l'encre et soudent des paires de lettres
+    //    (mesuré : groupes de 15-17 px au lieu de 7 px sur une bande de 17 px).
+    //  - POUR EXTRAIRE, il faut un seuil bas : le rendu FreeType inclut ses propres
+    //    bords antialiasés ; une boîte trop serrée ne tombe plus sur ses dimensions
+    //    (mesuré : 17/19 -> 2/19 sur les témoins avec un seuil à 40 %).
+    // Le seuil bas reste donc ici ; la découpe par le pas (extraire_glyphes_pas) traite
+    // le cas monospace, et la découpe par vallées reste à faire pour le proportionnel.
     const int seuil_seg = std::max(seuil, (int)(0.15f * (float)force_max));
 
     // 1. masque d'encre
