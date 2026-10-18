@@ -7,12 +7,11 @@
 #include "capture/shm_capture.h"
 #include "common/log.h"
 #include "gestes/gestes.h"
-#include "perceive/forme.h"
 #include "core/frame.h"
 #include "perceive/catalog.h"
-#include "perceive/fonte.h"
 #include "perceive/regions.h"
 #include "perceive/text_lines.h"
+#include "perceive/ocr.h"
 #include "perceive/windows.h"
 
 #include <X11/Xlib.h>
@@ -32,19 +31,19 @@
 
 namespace {
 
-bool g_lire = false;       // --lire : reconnaître les caractères par leur forme
-bool g_etiquettes = false; // --etiquettes : nommer chaque élément par son texte
-bool g_cibles = false;     // --cibles : les cibles cliquables, un mot = une cible
 std::string g_clic;        // --clic <texte> : cliquer la cible dont l'etiquette contient ce texte
 std::string g_taper;       // --taper <texte> : ecrire au clavier, caractere par caractere
-bool g_delta = false;      // --delta : ne rendre que ce qui a change depuis le dernier scan
-bool g_formes = false;     // --formes : les cibles NON textuelles (icones, cases, curseurs)
+std::string g_ecrire;      // --ecrire <id> <texte> : saisir dans un champ (clic + Ctrl+A + texte)
+std::string g_ecrire_texte;
+bool g_texte = false;      // --texte : lire l'ecriture de toute la fenetre, sans plan
+bool g_verbeux = false;    // --verbose : les diagnostics (capture, segmentation, catalogue).
+                           // Sans lui, un tool qui lit la page ne rend QUE ce qu'il a lu : le
+                           // bruit de mesure coutait 8 ko sur un plan de 3 ko (mesure 18/10).
 std::string g_dump;        // --dump "x,y,w,h fichier.ppm" : sortir les pixels d'une zone
 std::string g_gestes;      // --gestes "x,y,texte" : un geste constate, pour les tests
 std::string g_motif;       // --win <morceau de titre> : la fenetre visee par un geste
 bool g_ascii = false;      // --ascii : un schema ASCII de la page, pour l'agent
 bool g_boites = false;     // --boites : les cadres fermes (boutons, cartes, panneaux)
-bool g_encre = false;      // --encre : ajoute la couche d'encre (croquis grossier) au plan
 int  g_cote_min = 10;      // plus petit cote d'un cadre accepte
 int  g_pas = 10;           // taille d'une case du plan ASCII, en pixels (1 caractere = 10 px)
 int  g_aire_min = 150;     // aire minimale de la boite (pas du trait) : 150 px = une case 16x16
@@ -142,7 +141,7 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
         const bool ok2 = cap.get(zone, encore);
         const double t2 = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - t1).count();
-        if (ok2) std::printf("capture 2e   %.2f ms (tampon deja alloue)\n", t2);
+        if (ok2 && g_verbeux) std::printf("capture 2e   %.2f ms (tampon deja alloue)\n", t2);
     }
 
     t0 = std::chrono::steady_clock::now();
@@ -150,9 +149,11 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     const double t_seg = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - t0).count();
 
+    if (g_verbeux) {
     std::printf("zone         %s %dx%d en %d,%d\n", quoi, zone.w, zone.h, zone.x, zone.y);
     std::printf("capture      %.2f ms   segmentation %.2f ms   %zu regions retenues\n",
                 t_cap, t_seg, regions.size());
+    }
 
     // Les CADRES : une bordure continue qui se referme. Une bordure de 1 px sur une boite
     // 500x400 occupe 9 % de son aire, donc `regions_uniformes` la jette : c'est pour cela
@@ -183,8 +184,9 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     });
     const double t_bordes = std::chrono::duration<double, std::milli>(
                                 std::chrono::steady_clock::now() - t0).count();
-    std::printf("boites       %zu cadres fermes en %.2f ms (dont aplats bordes %.2f ms)\n",
-                boites.size(), t_boites, t_bordes);
+    if (g_verbeux)
+        std::printf("boites       %zu cadres fermes en %.2f ms (dont aplats bordes %.2f ms)\n",
+                    boites.size(), t_boites, t_bordes);
     if (g_boites) {
         for (const auto& b : boites)
             std::printf("  boite %4dx%-4d @ %4d,%-4d trait #%06x remplissage %.2f bord %.2f %6ld px\n",
@@ -192,13 +194,14 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                         b.remplissage, b.sur_bord, (long)b.pixels);
     }
 
-    const size_t max = regions.size() < 20 ? regions.size() : 20;
+    const size_t max = g_verbeux ? (regions.size() < 20 ? regions.size() : 20) : 0;
     for (size_t i = 0; i < max; ++i) {
         const auto& r = regions[i];
         std::printf("  %2zu  %4dx%-4d @ %4d,%-4d  couleur #%06x  remplissage %.2f  %6ld px\n",
                     i + 1, r.rect.w, r.rect.h, r.rect.x, r.rect.y, r.couleur & 0xFFFFFF,
                     r.remplissage, (long)r.pixels);
     }
+
 
     // Le catalogue recoit les DEUX lectures : les aplats et les cadres. Sans les cadres, un
     // bouton se reduit a son interieur et le plan ASCII ne montre pas la boite. Dedoublonnage
@@ -217,55 +220,51 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     const auto& elements = cat.maj(fenetre, toutes);
     const double t_cat = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - t0).count();
-    std::printf("\ncatalogue    %zu elements en %.2f ms (%zu glyphes ecartes)\n",
-                elements.size(), t_cat, cat.glyphes_ecartes);
-    const std::string texte = cat.texte();
-    size_t debut = 0, n = 0;
-    while (debut < texte.size() && n < 20) {
-        const size_t fin = texte.find('\n', debut);
-        std::printf("  %s\n", texte.substr(debut, fin - debut).c_str());
-        debut = fin + 1;
-        ++n;
-    }
+    if (g_verbeux)
+        std::printf("\ncatalogue    %zu elements en %.2f ms (%zu glyphes ecartes)\n",
+                    elements.size(), t_cat, cat.glyphes_ecartes);
 
-    // --etiquettes : le pipeline complet, en passes successives.
-    //   1. l'ecran est lu et decoupe en elements (catalogue) ;
-    //   2. chaque element est recadre, et son texte lu par empreintes de formes (CPU) ;
-    //   3. l'element sort avec son etiquette : c'est ce que l'agent recevra, avec un id.
-    if (g_etiquettes) {
-        const auto t3 = std::chrono::steady_clock::now();
-        size_t nommes = 0;
-        double pire = 0.0;
-        visio::Lecteur lecteur;
-        std::printf("\netiquettes   (recadrage + lecture, element par element)\n");
+    // LES DEUX GESTES DE L'AGENT. L'identifiant est celui que le plan affiche dans la boite ;
+    // un prefixe suffit (« a95 » trouve « a958c »).
+    //   --clic <id>              cliquer au centre de la cible
+    //   --ecrire <id> <texte>    cliquer dans le champ, selectionner, ecrire (input_text)
+    if (!g_clic.empty() || !g_ecrire.empty()) {
+        const std::string motif = g_ecrire.empty() ? g_clic : g_ecrire;
+        const visio::Element* cible = nullptr;
         for (const auto& e : elements) {
-            const visio::Rect r = visio::intersect(e.rect, f.region);
-            if (r.empty() || r.w < 20 || r.h < 8) continue;
-            visio::Frame g = visio::Frame::pour(r);
-            for (int y = 0; y < r.h; ++y)
-                std::memcpy(g.px.data() + (size_t)y * r.w,
-                            f.px.data() + (size_t)(y + r.y - f.region.y) * f.region.w +
-                                (r.x - f.region.x),
-                            (size_t)r.w * 4);
-            const uint32_t fg_ = visio::couleur_fond(g, 3);
-            const auto ls = visio::lignes_de_texte(g, fg_);
-            const auto t4 = std::chrono::steady_clock::now();
-            std::string txt;
-            for (const auto& l : ls) {
-                const std::string t = lecteur.lire(g, l, fg_);
-                if (!t.empty()) { txt += t; txt += ' '; }
+            char id[12];
+            std::snprintf(id, sizeof id, "%05lx", (unsigned long)(e.id & 0xFFFFF));
+            if (motif.size() <= std::strlen(id) && std::strncmp(id, motif.c_str(), motif.size()) == 0) {
+                cible = &e;
+                break;
             }
-            const double ms = std::chrono::duration<double, std::milli>(
-                                  std::chrono::steady_clock::now() - t4).count();
-            pire = std::max(pire, ms);
-            if (txt.empty()) continue;
-            std::printf("  %4dx%-4d @%4d,%-4d  %6.2f ms  « %s »\n", r.w, r.h, r.x, r.y, ms,
-                        txt.substr(0, 46).c_str());
-            ++nommes;
         }
-        std::printf("etiquettes   %zu nommees, pire cas %.2f ms, total %.1f ms\n", nommes, pire,
-                    std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - t3).count());
+        if (!cible) {
+            std::printf("geste        aucune cible ne commence par « %s »\n", motif.c_str());
+            return 2;
+        }
+        const int cx = cible->rect.x + cible->rect.w / 2;
+        const int cy = cible->rect.y + cible->rect.h / 2;
+        const bool saisie = !g_ecrire.empty();
+        visio::Contexte ctx(d);
+        ctx.pointer(cible->fenetre);
+        ctx.faire_le_geste(cx, cy, saisie ? g_ecrire_texte : "", 1, saisie);
+        std::printf("geste        %s %04x centre %d,%d  pointeur %d,%d -> %d,%d  %s\n",
+                    saisie ? "saisie" : "clic", (unsigned)(cible->id & 0xFFFFF), cx, cy,
+                    ctx.pointeur_x(), ctx.pointeur_y(), ctx.pointeur_x_apres(),
+                    ctx.pointeur_y_apres(),
+                    saisie ? ("« " + g_ecrire_texte + " »").c_str() : "");
+        return 0;
+    }
+    if (g_verbeux) {
+        const std::string texte = cat.texte();
+        size_t debut = 0, n = 0;
+        while (debut < texte.size() && n < 20) {
+            const size_t fin = texte.find('\n', debut);
+            std::printf("  %s\n", texte.substr(debut, fin - debut).c_str());
+            debut = fin + 1;
+            ++n;
+        }
     }
 
     // Les lignes de texte : ce que le catalogue écarte, la couche texte le regroupe.
@@ -274,10 +273,10 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     const auto lignes = visio::lignes_de_texte(f, fond);
     const double t_txt = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - t0).count();
-    std::printf("\ntexte        %zu lignes en %.2f ms (fond #%06x)\n", lignes.size(), t_txt,
-                fond & 0xFFFFFF);
+    if (g_verbeux)
+        std::printf("\ntexte        %zu lignes en %.2f ms (fond #%06x)\n", lignes.size(), t_txt,
+                    fond & 0xFFFFFF);
 
-    visio::Lecteur lecteur;   // rend les caractères avec FreeType, comme les applications
 
 
     // --dump "x,y,w,h fichier.ppm" : sortir les pixels bruts d'une zone. Sert a confronter
@@ -314,27 +313,78 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     // qui est DESSINE, et c'est la seule couche qui montre qu'un rond est rond (un cadre
     // rectangulaire ne le dit pas). Puis la STRUCTURE : les zones du catalogue avec leur
     // cadre et leur nom, la plus grande d'abord, les plus petites par-dessus.
+    // --texte : TOUT ce qui est ecrit dans la fenetre, ligne par ligne, sans plan ni boites. C'est
+    // la lecture nue : tesseract sur l'image entiere (~0,5 s pour 1870x1035), pour un texte long
+    // (un journal, un article) la ou le plan par boites decouperait trop.
+    if (g_texte) {
+        // DEUX PASSES, parce qu'aucune ne suffit (mesure sur la page temoin) : la passe globale lit
+        // les longues lignes (« booeba », l'adresse, les onglets) mais RATE les petits libelles
+        // d'un bouton (« Valider », « Envoyer ») ; la passe par boite les lit, elle. On garde les
+        // deux et on ecarte les doublons.
+        const auto t1 = std::chrono::steady_clock::now();
+        const auto global = visio::ocr_zone(f, f.region);
+        std::vector<visio::LigneOcr> tas = global;
+
+        std::vector<visio::Rect> zones;
+        for (const auto& e : elements) {
+            const visio::Rect r = e.rect;
+            if (r.empty() || r.w <= 24 || r.h < 12) continue;
+            if (r.w * 100 >= f.region.w * 98 && r.h * 100 >= f.region.h * 98) continue;
+            bool doublon = false;
+            for (const auto& z : zones)
+                if (std::abs(z.x - r.x) <= 6 && std::abs(z.y - r.y) <= 6 &&
+                    std::abs(z.w - r.w) <= 6 && std::abs(z.h - r.h) <= 6) {
+                    doublon = true;
+                    break;
+                }
+            if (!doublon) zones.push_back(r);
+        }
+        const auto par_boite = visio::ocr_zones(f, zones);
+        for (size_t k = 0; k < par_boite.size(); ++k)
+            for (auto l : par_boite[k]) {
+                l.y += zones[k].y;      // l'ordonnee rendue est relative a la boite : on la remet
+                                        // dans le repere de la fenetre.
+                bool connu = false;
+                for (const auto& g : global)
+                    if (g.texte.find(l.texte) != std::string::npos ||
+                        l.texte.find(g.texte) != std::string::npos) {
+                        connu = true;
+                        break;
+                    }
+                if (!connu) tas.push_back(l);
+            }
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t1).count();
+        std::printf("texte        %zu lignes, %dx%d px, %zu boites, %.0f ms\n", tas.size(),
+                    f.region.w, f.region.h, zones.size(), ms);
+        for (const auto& l : tas) std::printf("%4d  %s\n", l.y, l.texte.c_str());
+        return 0;
+    }
+
     if (g_ascii) {
-        // L'ECHELLE. Un caractere de terminal est DEUX fois plus haut que large : avec des
-        // cases carrees en pixels (10x10), la page sortait etiree en hauteur et un rond
-        // ressemblait a un oeuf. Une case doit valoir UN caractere a l'ecran, donc 2 fois
-        // plus haute que large : 10 x 20 px. Le plan garde alors les proportions de l'ecran.
+        // LE PLAN : les BOITES et ce qui est ECRIT dedans, rien d'autre.
+        //
+        // Histoire mesuree : le plan a porte une couche d'encre (la forme des pixels) et des
+        // contours d'ASCII art. Resultat : 1 432 caracteres dont 1 081 tirets, une ligne de
+        // texte de 20 px rendue en « \- /---------- \ ». Ce n'est pas ce qui sert a decider.
+        // Ce qui sert : ou sont les boites, ce qu'elles disent, et par quel nom les cliquer.
+        //
+        // Un caractere de terminal est deux fois plus haut que large : la case vaut 10x20 px,
+        // sinon tout sort etire (un rond devenait un oeuf).
         const int cellx = g_pas, celly = g_pas * 2;
         const int cols = std::max(1, f.region.w / cellx);
         const int rows = std::max(1, f.region.h / celly);
-        // Les cases couvertes par une LIGNE DE TEXTE : le texte s'y dessine en densite, jamais
-        // en orientation. Sans cela les futs des glyphes sortaient en « | » et « - », et une
-        // ligne de texte devenait un hachis de tirets au lieu de « ::: ».
-        std::vector<uint8_t> dans_texte((size_t)cols * (size_t)rows, 0);
-        for (const auto& l : lignes) {
-            const int ax = std::max(0, (l.rect.x - f.region.x) / cellx);
-            const int bx = std::min(cols - 1, (l.rect.x + l.rect.w - f.region.x) / cellx);
-            const int ay = std::max(0, (l.rect.y - f.region.y) / celly);
-            const int by = std::min(rows - 1, (l.rect.y + l.rect.h - f.region.y) / celly);
-            for (int y = ay; y <= by; ++y)
-                for (int x = ax; x <= bx; ++x) dans_texte[(size_t)y * (size_t)cols + (size_t)x] = 1;
-        }
         std::vector<std::string> gr((size_t)rows, std::string((size_t)cols, ' '));
+
+        // Les zones, de la plus grande a la plus petite : une petite boite se dessine par-dessus
+        // une grande, et son texte ne se fait pas recouvrir.
+        std::vector<const visio::Element*> zs;
+        zs.reserve(elements.size());
+        for (const auto& e : elements) zs.push_back(&e);
+        std::sort(zs.begin(), zs.end(), [](const visio::Element* a, const visio::Element* b) {
+            return a->rect.area() > b->rect.area();
+        });
+
         auto nom = [](visio::Genre x) -> const char* {
             switch (x) {
                 case visio::Genre::Fenetre: return "fenetre";
@@ -348,547 +398,198 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
             }
         };
 
-        // 1. LA COUCHE D'ENCRE. Deux mesures par case : la DENSITE (aplats, texte) et le
-        //    SQUELETTE (traits). Un trait fin recoit un caractere d'ORIENTATION — « - »,
-        //    « | », « / », « \ » — donc un trait continu au lieu d'un chapelet de points ;
-        //    une zone epaisse garde sa densite.
-        // LA COUCHE D'ENCRE EST OPTIONNELLE (--encre). Par defaut le plan montre les BOITES et
-        // ce qui est ECRIT dedans : c'est ce qui sert a decider. L'encre, elle, transformait une
-        // ligne de texte en tache (« \- /---------- \ ») et un mur de tirets.
-        if (g_encre) {
-        std::vector<int64_t> ncar((size_t)cols * (size_t)rows, 0);
-        {
-            const int fr = (int)((fond >> 16) & 0xFF), fg = (int)((fond >> 8) & 0xFF),
-                      fb = (int)(fond & 0xFF);
-            // Moments de l'ENCRE dans chaque case, en pixels depuis le coin de la case :
-            // l'ecart-type perpendiculaire a l'axe principal dit si la case est traversee par
-            // un TRAIT (encre serree, 1-4 px) ou par du TEXTE (encre etalee sur la case).
-            std::vector<double> sx((size_t)cols * (size_t)rows, 0), sy = sx, sxx = sx,
-                                syy = sx, sxy = sx;
-            for (int y = 0; y < f.region.h; ++y) {
-                const uint32_t* p = f.px.data() + (size_t)y * f.region.w;
-                for (int x = 0; x < f.region.w; ++x) {
-                    const int dr = std::abs((int)((p[x] >> 16) & 0xFF) - fr);
-                    const int dg = std::abs((int)((p[x] >> 8) & 0xFF) - fg);
-                    const int db = std::abs((int)(p[x] & 0xFF) - fb);
-                    if (dr <= 16 && dg <= 16 && db <= 16) continue;
-                    const size_t k = (size_t)(y / celly) * (size_t)cols + (size_t)(x / cellx);
-                    const double u = (double)(x % cellx), v = (double)(y % celly);
-                    ++ncar[k];
-                    sx[k] += u; sy[k] += v;
-                    sxx[k] += u * u; syy[k] += v * v; sxy[k] += u * v;
-                }
-            }
-            for (int cy = 0; cy < rows; ++cy)
-                for (int cx = 0; cx < cols; ++cx) {
-                    const size_t k = (size_t)cy * (size_t)cols + (size_t)cx;
-                    const double n = (double)ncar[k];
-                    const double d = n / (double)(cellx * celly);
-                    char c = ' ';
-                    if (n >= 4 && !dans_texte[k]) {
-                        const double ux = sx[k] / n, uy = sy[k] / n;
-                        const double vx = sxx[k] / n - ux * ux, vy = syy[k] / n - uy * uy;
-                        const double vxy = sxy[k] / n - ux * uy;
-                        const double tr = vx + vy, det = vx * vy - vxy * vxy;
-                        const double disc = std::sqrt(std::max(0.0, tr * tr / 4 - det));
-                        const double l2 = tr / 2 - disc;            // variance perpendiculaire
-                        if (l2 <= 12.0) {                           // sigma_perp <= ~3,5 px : un trait
-                            const double th = 0.5 * std::atan2(2 * vxy, vx - vy);
-                            // angle VU a l'ecran : la case fait cellx de large et celly de haut
-                            double a = std::atan2(std::sin(th) / celly, std::cos(th) / cellx) *
-                                       57.29577951308232;
-                            if (a > 90) a -= 180;
-                            if (a < -90) a += 180;
-                            const double aa = std::abs(a);
-                            if (aa <= 22.5) {
-                                // REGLE DE HAUTEUR : « _ » est en bas de la case, « - » au
-                                // milieu. Une ligne horizontale basse s'ecrit « _ », sinon les
-                                // lignes de deux cases voisines ne se raccordent pas.
-                                const double fy = uy / (double)celly;
-                                c = fy > 0.60 ? '_' : '-';
-                            } else if (aa >= 67.5) {
-                                c = '|';
-                            } else {
-                                c = a > 0 ? '\\' : '/';
-                            }
-                        }
-                    }
-                    if (c == ' ') {
-                        if (d >= 0.70) c = '#';
-                        else if (d >= 0.45) c = '*';
-                        else if (d >= 0.12) c = ':';
-                        else if (d > 0.01) c = '.';
-                    }
-                    gr[(size_t)cy][(size_t)cx] = c;
-                }
-        }
+        struct Cible {
+            visio::Rect r;
+            std::string id;
+            std::string genre;
+            std::string texte;
+        };
+        std::vector<Cible> cibles;
 
-        std::vector<const visio::Element*> zs;
-        zs.reserve(elements.size());
-        // Le nettoyage des runs appartient a la COUCHE D'ENCRE : execute apres les formes, il
-        // effacait le second caractere d'une pointe « /\ », les deux etant contigus dans la meme
-        // rangee. Il passe donc ici, avant que les formes ne soient tracees.
-        // UN SEUL CARACTERE PAR RUN DE TRAIT, PAR LIGNE. Un cote de triangle a 51° traverse
-        // 1,3 case par ligne (13 px pour une case de 20 px de haut) : il allumait donc deux
-        // caracteres par ligne et ressortait double. On regroupe les cases contigues portant
-        // un trait non horizontal et on ne garde que celle qui porte le plus d'encre : le
-        // cote devient une suite de « / » d'un caractere, comme un dessin a la main.
-        // Les traits horizontaux ne sont pas touches : une ligne de « - » est deja continue.
-        for (int cy = 0; cy < rows; ++cy) {
-            int x = 0;
-            while (x < cols) {
-                const char c0 = gr[(size_t)cy][(size_t)x];
-                if (c0 != '|' && c0 != '/' && c0 != '\\') { ++x; continue; }
-                int fin = x;
-                while (fin + 1 < cols) {
-                    const char c1 = gr[(size_t)cy][(size_t)fin + 1];
-                    if (c1 != '|' && c1 != '/' && c1 != '\\') break;
-                    ++fin;
-                }
-                if (fin > x) {
-                    int garde = x;
-                    for (int i = x + 1; i <= fin; ++i)
-                        if (ncar[(size_t)cy * (size_t)cols + (size_t)i] >
-                            ncar[(size_t)cy * (size_t)cols + (size_t)garde])
-                            garde = i;
-                    for (int i = x; i <= fin; ++i)
-                        if (i != garde) gr[(size_t)cy][(size_t)i] = ' ';
-                }
-                x = fin + 1;
-            }
-        }
-
-        }   // fin de la couche d'encre optionnelle
-
-        std::vector<const visio::Element*> zs;
-        zs.reserve(elements.size());
-        for (const auto& e : elements) zs.push_back(&e);
-        std::sort(zs.begin(), zs.end(),
-                  [](const visio::Element* a, const visio::Element* b) {
-                      return a->rect.area() > b->rect.area();
-                  });
-        size_t formes = 0;
-        std::vector<visio::Rect> interieurs;   // les cadres déjà dessinés
+        // PASSE 1 : quelles zones sont des cibles ? (les filtres, et pas encore de dessin)
+        struct Choix {
+            const visio::Element* e;
+            visio::Rect r;
+            visio::Rect dedans;     // rect recadre de 2 px : c'est lui qu'on donne a lire
+            std::string id;         // 5 caracteres, la reference stable
+            std::string affiche;    // ce que le plan montre (prefixe unique)
+        };
+        std::vector<Choix> choix;
         for (const auto* e : zs) {
-            const visio::Rect& r = e->rect;
-            // Ce qui est DEDANS une forme fermée n'est pas redessiné : l'intérieur d'un
-            // rond est un rectangle de la même taille, et le dessiner transforme le rond en
-            // carré. Une ligne de texte non plus : l'encre la montre déjà.
-            if (!e->cadre) {
-                if (e->genre == visio::Genre::Texte) continue;
-                bool dedans = false;
-                for (const auto& c : interieurs)
-                    if (r.x > c.x && r.y > c.y && r.x + r.w < c.x + c.w && r.y + r.h < c.y + c.h) {
-                        dedans = true;
-                        break;
-                    }
-                if (dedans) continue;
-            } else {
-                interieurs.push_back(r);
+            const visio::Rect r = e->rect;
+            if (r.empty()) continue;
+            // La fenetre entiere n'est pas une cible : elle contient tout le reste.
+            if (r.w * 100 >= f.region.w * 98 && r.h * 100 >= f.region.h * 98) continue;
+            // Les glyphes isoles (<= 24x24) sont du texte, pas des boites : ils sont lus avec la
+            // ligne qui les porte, sinon chaque lettre devient une cible.
+            if (r.w <= 24 && r.h <= 24) continue;
+            // Le catalogue voit DEUX fois la meme boite quand la bordure et l'interieur donnent
+            // deux regions (240x120 et 238x118). On garde la premiere, la plus grande.
+            bool doublon = false;
+            for (const auto& c : choix) {
+                const int dh = std::abs(c.r.w - r.w), dv = std::abs(c.r.h - r.h);
+                if (dh <= 6 && dv <= 6 && std::abs(c.r.x - r.x) <= 6 && std::abs(c.r.y - r.y) <= 6) {
+                    doublon = true;
+                    break;
+                }
             }
+            if (doublon) continue;
+            // Identifiant court et STABLE (le catalogue le calcule sur la geometrie) : c'est
+            // l'argument de l'outil de clic. On garde 5 caracteres en memoire, mais le plan n'en
+            // affiche que ce qu'il faut pour rester unique : 3 en general (assez pour un bouton
+            // de 11 cases qui doit montrer « Valider »), davantage si deux cibles commencent
+            // pareil. L'outil de clic accepte n'importe quel prefixe.
+            char id[12];
+            std::snprintf(id, sizeof id, "%05lx", (unsigned long)(e->id & 0xFFFFF));
+            const visio::Rect dedans{r.x + 2, r.y + 2, std::max(0, r.w - 4), std::max(0, r.h - 4)};
+            choix.push_back({e, r, dedans, id});
+        }
+
+        // Longueur d'affichage : la plus courte qui reste unique dans ce plan.
+        for (auto& c : choix) {
+            size_t n = 3;
+            while (n < c.id.size()) {
+                bool collision = false;
+                for (const auto& a : choix) {
+                    if (&a == &c) continue;
+                    if (a.id.compare(0, n, c.id, 0, n) == 0) { collision = true; break; }
+                }
+                if (!collision) break;
+                ++n;
+            }
+            c.affiche = c.id.substr(0, n);
+        }
+
+        // PASSE 2 : le texte de toutes les cibles en UN appel au moteur.
+        std::vector<visio::Rect> a_lire;
+        for (const auto& c : choix) a_lire.push_back(c.dedans);
+        const auto t1 = std::chrono::steady_clock::now();
+        const auto textes = visio::ocr_zones(f, a_lire);
+        const double t_ocr = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - t1).count();
+
+        // PASSE 3 : dessiner les boites, poser l'identifiant et le texte.
+        size_t lus = 0;
+        for (size_t k = 0; k < choix.size(); ++k) {
+            const visio::Rect& r = choix[k].r;
+            const std::string& id = choix[k].affiche;
+            const auto& ls = textes[k];
+            std::string texte;
+            for (const auto& l : ls) {
+                if (!texte.empty()) texte += " / ";
+                texte += l.texte;
+            }
+            if (!texte.empty()) ++lus;
+
             int x0 = (r.x - f.region.x) / cellx, y0 = (r.y - f.region.y) / celly;
             int x1 = (r.x + r.w - f.region.x) / cellx, y1 = (r.y + r.h - f.region.y) / celly;
-            x0 = std::max(0, std::min(x0, cols - 1)); x1 = std::max(0, std::min(x1, cols - 1));
-            y0 = std::max(0, std::min(y0, rows - 1)); y1 = std::max(0, std::min(y1, rows - 1));
-            char id[12];
-            std::snprintf(id, sizeof id, "%06lx", (unsigned long)(e->id & 0xFFFFFF));
+            x0 = std::max(0, std::min(x0, cols - 1));
+            x1 = std::max(0, std::min(x1, cols - 1));
+            y0 = std::max(0, std::min(y0, rows - 1));
+            y1 = std::max(0, std::min(y1, rows - 1));
 
-            // Une forme fermee qui n'est PAS rectangulaire ne recoit pas de cadre : le
-            // dessiner en rectangle mentirait sur sa forme. C'est l'encre qui la montre ;
-            // on ne pose que son nom, sur sa premiere ligne.
-            // Une forme fermee non rectangulaire n'est dessinee au contour que si son contour
-            // RADIAL est lisse. Un bloc de texte pris pour une forme a un rayon qui saute d'une
-            // lettre a l'autre : le dessiner au contour ne donne que du bruit. Mesure : la
-            // variation moyenne du rayon d'un tour a l'autre, rapportee au rayon moyen — 0,05
-            // pour un rond, plus de 0,3 pour du texte.
-            bool forme_lisible = false;
-            std::vector<std::pair<double, double>> contour;
-            if (e->cadre && e->sur_bord < 0.75) {
-                visio::Rect bb0{e->rect.x, e->rect.y, e->rect.w, e->rect.h};
-                contour = contour_radial(f, bb0, fond, 3);
-                if (contour.size() >= 20) {
-                    double cxm = 0, cym = 0;
-                    for (const auto& q : contour) { cxm += q.first; cym += q.second; }
-                    cxm /= (double)contour.size();
-                    cym /= (double)contour.size();
-                    double smoy = 0, dvar = 0, prec = 0;
-                    for (size_t i = 0; i < contour.size(); ++i) {
-                        const double rr2 = std::hypot(contour[i].first - cxm, contour[i].second - cym);
-                        smoy += rr2;
-                        if (i) dvar += std::abs(rr2 - prec);
-                        prec = rr2;
-                    }
-                    smoy /= (double)contour.size();
-                    dvar /= (double)contour.size();
-                    if (smoy > 1.0 && dvar / smoy < 0.12) forme_lisible = true;
+            // Une boite d'une seule rangee (un champ de 23 px) n'a pas la place pour un cadre :
+            // le cadre mangerait sa propre ligne et le texte avec. On la montre entre crochets.
+            const bool mince = (y1 - y0) < 2;
+            const bool cadre = (x1 - x0 >= 3 && y1 - y0 >= 1 && !mince);
+            if (cadre) {
+                for (int x = x0; x <= x1; ++x) {
+                    gr[(size_t)y0][(size_t)x] = '-';
+                    gr[(size_t)y1][(size_t)x] = '-';
                 }
-            }
-            if (e->cadre && e->sur_bord < 0.75 && forme_lisible) {
-                ++formes;
-                // On TRACE LE CONTOUR : c'est la forme elle-meme, pas une case d'encre. La
-                // couche d'encre est effacee dans la boite, sinon le contour se superpose a
-                // l'encre deja posee et la forme ressort doublee.
-                for (int y = y0; y <= y1; ++y)
-                    for (int x = x0; x <= x1; ++x) gr[(size_t)y][(size_t)x] = ' ';
-                // MODELE d'abord, dessin ensuite : une ellipse ou un polygone, pas des largeurs.
-                const visio::Forme modele = visio::analyser_forme(contour);
-                visio::dessiner_forme(gr, modele, f.region, cellx, celly, cols, rows);
-                std::string lab = std::string(nom(e->genre)) + " " + id;
-                const int place = std::max(0, x1 - x0);
-                // etiquette sous la forme, pour ne pas la recouvrir
-                const int yl = std::min(rows - 1, y1 + 1);
-                if (place > 3) {
-                    if ((int)lab.size() > place) lab = lab.substr(0, (size_t)place);
-                    for (size_t k = 0; k < lab.size(); ++k) gr[(size_t)yl][(size_t)x0 + k] = lab[k];
+                for (int y = y0; y <= y1; ++y) {
+                    gr[(size_t)y][(size_t)x0] = '|';
+                    gr[(size_t)y][(size_t)x1] = '|';
                 }
-                continue;
+                gr[(size_t)y0][(size_t)x0] = '+';
+                gr[(size_t)y0][(size_t)x1] = '+';
+                gr[(size_t)y1][(size_t)x0] = '+';
+                gr[(size_t)y1][(size_t)x1] = '+';
             }
-            // Un bouton de 32 px de haut ne fait pas deux cases de plan : pas de cadre
-            // possible. On lui donne une ligne d'encre rehaussee et son nom, sinon la zone
-            // est visible dans les pixels mais son identifiant n'apparait nulle part et
-            // l'agent ne peut pas la nommer.
-            if (x1 - x0 < 3 || y1 - y0 < 2) {
-                const int y = (y0 + y1) / 2;
-                for (int x = x0; x <= x1; ++x) gr[(size_t)y][(size_t)x] = '=';
-                const std::string lab = std::string(" ") + nom(e->genre) + " " + id;
-                const int depart = x1 + 1;
-                if (depart + (int)lab.size() < cols)
-                    for (size_t k = 0; k < lab.size(); ++k) gr[(size_t)y][(size_t)depart + k] = lab[k];
-                continue;
-            }
-            // Les traits du cadre sont STRUCTURELS : ils passent sur l'encre (sinon un
-            // point d'encre coupe la bordure et le plan devient illisible).
-            for (int x = x0; x <= x1; ++x) {
-                gr[(size_t)y0][(size_t)x] = '-';
-                gr[(size_t)y1][(size_t)x] = '-';
-            }
-            for (int y = y0; y <= y1; ++y) {
-                gr[(size_t)y][(size_t)x0] = '|';
-                gr[(size_t)y][(size_t)x1] = '|';
-            }
-            gr[(size_t)y0][(size_t)x0] = '+'; gr[(size_t)y0][(size_t)x1] = '+';
-            gr[(size_t)y1][(size_t)x0] = '+'; gr[(size_t)y1][(size_t)x1] = '+';
-            // L'encre du meme trait tombe souvent dans la case VOISINE (le trait de 1 px est a
-            // cheval sur la frontiere) : on la blanchit, sinon le plan montre des bordures
-            // doubles « || » qui n'existent pas dans la page.
-            for (int y = y0; y <= y1; ++y) {
-                if (x0 > 0) gr[(size_t)y][(size_t)x0 - 1] = ' ';
-                if (x1 + 1 < cols) gr[(size_t)y][(size_t)x1 + 1] = ' ';
-            }
-            for (int x = x0; x <= x1; ++x) {
-                if (y0 > 0) gr[(size_t)y0 - 1][(size_t)x] = ' ';
-                if (y1 + 1 < rows) gr[(size_t)y1 + 1][(size_t)x] = ' ';
-            }
-            // Et l'encre tombe aussi a l'INTERIEUR du rect (le rect est la boite du trait, donc
-            // le trait y est contenu sur 1-2 px) : on blanchit une case a l'interieur des bords.
-            if (x1 - x0 >= 5 && y1 - y0 >= 3) {
-                for (int y = y0 + 1; y < y1; ++y) {
-                    gr[(size_t)y][(size_t)x0 + 1] = ' ';
-                    gr[(size_t)y][(size_t)x1 - 1] = ' ';
-                }
-                for (int x = x0 + 1; x < x1; ++x) {
-                    gr[(size_t)y0 + 1][(size_t)x] = ' ';
-                    gr[(size_t)y1 - 1][(size_t)x] = ' ';
-                }
-            }
-            // Etiquette : UNIQUEMENT si la boite est vide. Une boite qui porte du texte montre son
-            // texte (couche suivante) ; y ajouter « cadre 106a29 » ne dit rien a personne.
-            bool porte_texte = false;
-            for (const auto& l : lignes)
-                if (l.rect.x >= r.x && l.rect.y >= r.y && l.rect.x + l.rect.w <= r.x + r.w &&
-                    l.rect.y + l.rect.h <= r.y + r.h) { porte_texte = true; break; }
-            std::string lab = std::string(" ") + nom(e->genre) + " " + id + " ";
-            const int place = x1 - x0 - 1;
-            if (y0 + 1 < y1 && place > 3 && !porte_texte) {
-                if ((int)lab.size() > place) lab = lab.substr(0, (size_t)place);
-                for (size_t k = 0; k < lab.size(); ++k) gr[(size_t)y0 + 1][(size_t)x0 + 1 + k] = lab[k];
-            }
-        }
-        // LA COUCHE TEXTE : ce qui est ECRIT, a sa place. C'est la moitie de l'information d'une
-        // page et le plan ne la montrait pas — il montrait des taches a la place des mots.
-        visio::Lecteur lecteur2;
-        size_t lues = 0, vides = 0;
-        double t_lecture = 0;
-        for (const auto& l : lignes) {
-            const auto t1 = std::chrono::steady_clock::now();
-            const std::string txt = lecteur2.lire(f, l, fond);
-            t_lecture += std::chrono::duration<double, std::milli>(
-                             std::chrono::steady_clock::now() - t1).count();
-            if (txt.empty()) { ++vides; continue; }
-            // La ligne va dans le plus PETIT cadre qui la contient, et jamais sur sa bordure.
-            int y = (l.rect.y - f.region.y) / celly;
-            int x = (l.rect.x - f.region.x) / cellx;
-            int by = rows - 1, bx = cols - 1;
-            int ay = 0, ax = 0;
-            double aire = 1e18;
-            for (const auto& c : interieurs)
-                if (l.rect.x >= c.x && l.rect.y >= c.y && l.rect.x + l.rect.w <= c.x + c.w &&
-                    l.rect.y + l.rect.h <= c.y + c.h && (double)c.w * c.h < aire) {
-                    aire = (double)c.w * c.h;
-                    const int cy0 = (c.y - f.region.y) / celly, cy1 = (c.y + c.h - f.region.y) / celly;
-                    const int cx0 = (c.x - f.region.x) / cellx, cx1 = (c.x + c.w - f.region.x) / cellx;
-                    ay = std::max(0, std::min(cy0 + 1, rows - 1));
-                    by = std::max(0, std::min(cy1 - 1, rows - 1));
-                    ax = std::max(0, std::min(cx0 + 1, cols - 1));
-                    bx = std::max(0, std::min(cx1 - 1, cols - 1));
-                }
-            y = std::max(ay, std::min(by, y));
-            x = std::max(ax, std::min(bx, x));
-            // Une rangee deja occupee par du texte : on descend d'une rangee (deux essais).
-            for (int essai = 0; essai < 3; ++essai) {
-                bool prise = false;
-                for (int k = 0; k < (int)txt.size() && x + k <= bx; ++k) {
-                    const char c = gr[(size_t)y][(size_t)(x + k)];
-                    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
-                        prise = true;
-                        break;
-                    }
-                }
-                if (!prise || y >= by) break;
-                ++y;
-            }
-            for (int k = 0; k < (int)txt.size() && x + k <= bx; ++k)
-                gr[(size_t)y][(size_t)(x + k)] = txt[(size_t)k];
-            ++lues;
-        }
 
-        std::printf("\nplan         %dx%d cases de %dx%d px (1 caractere = 1 case), %zu zones dont "
-                    "%zu formes non rectangulaires\n", cols, rows, cellx, celly, elements.size(),
-                    formes);
-        std::printf("texte        %zu lignes ecrites, %zu illisibles, lecture %.1f ms\n", lues, vides,
-                    t_lecture);
-        if (g_encre)
-            std::printf("encre        ' ' rien  '.' trait  ':' clairseme  '*' dense  '#' plein\n");
-        // VISIO_DEBUG_PLAN : les coordonnees EXACTES de chaque caractere, pour comparer avec le
-        // modele sans se tromper de decalage en lisant la sortie a l'oeil.
-        if (std::getenv("VISIO_DEBUG_PLAN")) {
-            int yy = 0;
-            for (const auto& l : gr) {
-                std::printf("DBGPLAN r=%3d", yy++);
-                for (size_t x = 0; x < l.size(); ++x)
-                    if (l[x] != ' ') std::printf(" %zu:%c", x, l[x]);
-                std::printf("\n");
-            }
-        }
-        for (const auto& l : gr) std::printf("|%s|\n", l.c_str());
-    }
-
-    // --cibles : la decoupe FINE. Un mot = une cible ; chaque cible porte un identifiant et
-    // son etiquette. C'est ce que l'agent recoit : il choisit un id, il ne voit pas de pixels.
-    if (g_cibles) {
-        const auto t5 = std::chrono::steady_clock::now();
-        bool deja_clique = false;
-        std::vector<std::tuple<uint64_t, std::string, visio::Rect>> vus;
-        visio::Lecteur lecteur;
-        size_t total = 0;
-        std::printf("\ncibles       (un mot = une cible, lecture mot par mot)\n");
-
-        // OPTIMISATION : une cible deja vue (meme id, donc meme geometrie) a deja ete lue.
-        // Son etiquette est dans l'etat du scan precedent : on ne relit pas un pixel.
-        std::map<std::string, std::string> memo;
-        size_t evitees = 0;
-        {
-            const char* h0 = std::getenv("HOME");
-            std::ifstream in(std::string(h0 ? h0 : ".") + "/.cache/visio/" +
-                             std::to_string((int)fenetre) + ".txt");
-            std::string l3;
-            while (std::getline(in, l3)) {
-                const auto p = l3.find(' ');
-                const auto b = l3.find('|');
-                if (p == std::string::npos || b == std::string::npos) continue;
-                memo[l3.substr(0, p)] = l3.substr(b + 1);
-            }
-        }
-
-        for (const auto& l : lignes) {
-            const auto gs = visio::extraire_glyphes(f, l, fond);
-            if (gs.empty()) continue;
-            size_t debut = 0;
-            for (size_t k = 1; k <= gs.size(); ++k) {
-                bool coupe = (k == gs.size());
-                if (!coupe) {
-                    const int ecart = gs[k].rect.x - gs[k - 1].rect.right();
-                    // Un espace separe deux mots ; sous 45 % de la hauteur, c'est la meme
-                    // cible (lettres soudées ou kerning serre).
-                    coupe = ecart > 0 && (float)ecart > 0.45f * (float)gs[k - 1].rect.h;
-                }
-                if (!coupe) continue;
-                const visio::Rect r = visio::Rect{gs[debut].rect.x, l.rect.y,
-                                                  gs[k - 1].rect.right() - gs[debut].rect.x,
-                                                  l.rect.h};
-                // L'identifiant se calcule AVANT de lire : geometrie + empreinte des PIXELS.
-                // Sans l'empreinte, une horloge ou un compteur garderait son ancienne
-                // etiquette (meme place, meme taille, texte different). Avec elle, un mot qui
-                // change est une cible neuve : relu une fois, puis mis en cache.
-                uint64_t sig = 1469598103934665603ull;
-                for (int yy = r.y; yy < r.y + r.h; ++yy) {
-                    const int ly = yy - f.region.y;
-                    if (ly < 0 || ly >= f.region.h) continue;
-                    const uint32_t* row = f.px.data() + (size_t)ly * f.region.w;
-                    for (int xx = r.x; xx < r.x + r.w; ++xx) {
-                        const int lx = xx - f.region.x;
-                        if (lx < 0 || lx >= f.region.w) continue;
-                        sig ^= (row[lx] & 0xFFFFFFu);
-                        sig *= 1099511628211ull;
-                    }
-                }
-                uint64_t id = 1469598103934665603ull;
-                const std::string gk = std::to_string((int)fenetre) + "|" +
-                                       std::to_string(r.x) + "," + std::to_string(r.y) + "," +
-                                       std::to_string(r.w) + "x" + std::to_string(r.h) + "|" +
-                                       std::to_string(sig);
-                for (unsigned char ch : gk) { id ^= ch; id *= 1099511628211ull; }
-                char cle[32];
-                std::snprintf(cle, sizeof cle, "%016lx", id);
-
-                std::string txt;
-                const auto mi = memo.find(cle);
-                if (mi != memo.end()) {
-                    txt = mi->second;      // deja lue : cout nul
-                    ++evitees;
+            // L'identifiant, puis le texte, a l'interieur. Une zone ecrivable vide montre des
+            // « _ » : c'est la qu'un input_text a du sens.
+            const int lx = cadre ? x0 + 1 : x0;
+            const int ly = cadre ? y0 + 1 : y0;
+            const int place = cadre ? x1 - x0 - 1 : 4;
+            if (place >= 5) {
+                for (int i = 0; id[i] && lx + i < cols; ++i) gr[(size_t)ly][(size_t)lx + i] = id[i];
+                const int tx = lx + (int)id.size() + 1;
+                if (texte.empty() && choix[k].e->genre == visio::Genre::Champ) {
+                    for (int x = tx; x < lx + place; ++x) gr[(size_t)ly][(size_t)x] = '_';
                 } else {
-                    visio::LigneTexte mot{r, 0, 1.0};
-                    txt = lecteur.lire(f, mot, fond);
-                }
-                if (!txt.empty() && txt != " ") {
-                    vus.emplace_back(id, txt, r);
-                    if (!g_delta)
-                        std::printf("  %016lx  cliquer  %4dx%-3d @%5d,%-4d  « %s »\n", id, r.w,
-                                    r.h, r.x, r.y, txt.c_str());
-                    ++total;
-
-                    // --clic : le geste lui-meme. On vise le CENTRE de la cible, on
-                    // deplace, on appuie, on relache. Rien d'autre n'est n
-                    if (!g_clic.empty() && !deja_clique && txt.find(g_clic) != std::string::npos) {
-                        const int cx = r.x + r.w / 2, cy = r.y + r.h / 2;
-                        // Le geste passe par visio::Contexte : focus donne a la cible sans la
-                        // lever, clic, puis pointeur et focus REMIS en place (docs/GESTES.md).
-                        visio::Contexte ctx(d);
-                        ctx.pointer(fenetre);
-                        ctx.faire_le_geste(cx, cy, "");
-                        std::printf("clic         sur « %s » au centre %d,%d (id %016lx) ; pointeur "
-                                    "rendu a %d,%d\n", txt.c_str(), cx, cy, id,
-                                    ctx.pointeur_x_apres(), ctx.pointeur_y_apres());
-                        deja_clique = true;
+                    for (const auto& l : ls) {
+                        int yy = ly + l.y / celly;
+                        if (yy <= y0 || yy >= y1 || yy >= rows) continue;
+                        int xx = tx;
+                        for (char ch : l.texte) {
+                            if (xx >= x1 || xx >= cols) break;
+                            gr[(size_t)yy][(size_t)xx++] = ch;
+                        }
                     }
                 }
-                debut = k;
+            }
+            if (mince) {
+                // [identifiant texte] : la zone reste visible et cliquable sans cadre.
+                int xx = x0;
+                if (xx < cols) gr[(size_t)y0][(size_t)xx++] = '[';
+                for (int i = 0; id[i] && xx < cols; ++i) gr[(size_t)y0][(size_t)xx++] = id[i];
+                if (xx < cols) gr[(size_t)y0][(size_t)xx++] = ' ';
+                // Le texte DEBORDE la boite si elle est etroite : « Envoyer » dans 6 cases ne
+                // tient pas, mais le lire vaut mieux que le couper a « E ».
+                for (char ch : texte) {
+                    if (xx >= cols) break;
+                    gr[(size_t)y0][(size_t)xx++] = ch;
+                }
+                if (xx < cols) gr[(size_t)y0][(size_t)xx] = ']';
+            }
+            cibles.push_back({r, id, nom(choix[k].e->genre), texte});
+        }
+
+        // Les lignes de texte qui ne sont dans aucune boite (un titre, une adresse, une ligne de
+        // tableau) : lues elles aussi en un seul appel, puis posees a leur place.
+        std::vector<visio::Rect> libres;
+        for (const auto& l : lignes) {
+            bool dedans = false;
+            for (const auto& c : cibles)
+                if (l.rect.x >= c.r.x && l.rect.y >= c.r.y && l.rect.x + l.rect.w <= c.r.x + c.r.w &&
+                    l.rect.y + l.rect.h <= c.r.y + c.r.h) {
+                    dedans = true;
+                    break;
+                }
+            if (!dedans) libres.push_back(l.rect);
+        }
+        size_t hors = 0;
+        if (!libres.empty()) {
+            const auto tl = visio::ocr_zones(f, libres);
+            for (size_t k = 0; k < libres.size(); ++k) {
+                if (tl[k].empty()) continue;
+                ++hors;
+                const visio::Rect& r = libres[k];
+                int y = (r.y - f.region.y) / celly, x = (r.x - f.region.x) / cellx;
+                y = std::max(0, std::min(rows - 1, y));
+                x = std::max(0, std::min(cols - 1, x));
+                int xx = x;
+                for (char ch : tl[k][0].texte) {
+                    if (xx >= cols) break;
+                    gr[(size_t)y][(size_t)xx++] = ch;
+                }
             }
         }
 
-        {   // l'etat est toujours ecrit : c'est aussi le cache des etiquettes
-            const char* home = std::getenv("HOME");
-            const std::string base = std::string(home ? home : ".") + "/.cache/visio";
-            const std::string chemin = base + "/" + std::to_string((int)fenetre) + ".txt";
-            std::map<std::string, std::string> avant;
-            {
-                std::ifstream in(chemin);
-                std::string l2;
-                while (std::getline(in, l2)) {
-                    const auto p = l2.find(' ');
-                    if (p == std::string::npos) continue;
-                    avant[l2.substr(0, p)] = l2.substr(p + 1);
-                }
-            }
-            std::map<std::string, std::string> apres;
-            size_t nouveaux = 0, changes = 0;
-            for (const auto& v : vus) {
-                char id_hex[32], etat[192];
-                std::snprintf(id_hex, sizeof id_hex, "%016lx", std::get<0>(v));
-                const visio::Rect& r = std::get<2>(v);
-                std::snprintf(etat, sizeof etat, "%d,%d,%dx%d|%s", r.x, r.y, r.w, r.h,
-                              std::get<1>(v).c_str());
-                apres[id_hex] = etat;
-                const auto it = avant.find(id_hex);
-                if (it == avant.end()) {
-                    if (g_delta) std::printf("  +  %s  %s\n", id_hex, etat);
-                    ++nouveaux;
-                } else if (it->second != etat) {
-                    if (g_delta) std::printf("  ~  %s  %s\n", id_hex, etat);
-                    ++changes;
-                }
-            }
-            size_t partis = 0;
-            for (const auto& a : avant)
-                if (!apres.count(a.first)) {
-                    if (g_delta) std::printf("  -  %s\n", a.first.c_str());
-                    ++partis;
-                }
-            std::error_code ec;
-            std::filesystem::create_directories(base, ec);
-            std::ofstream out(chemin, std::ios::trunc);
-            for (const auto& a : apres) out << a.first << ' ' << a.second << '\n';
-            if (g_delta)
-                std::printf("delta        %zu nouveaux, %zu modifies, %zu disparus (%zu cibles)\n",
-                            nouveaux, changes, partis, apres.size());
+        std::printf("\nplan         %dx%d cases de %dx%d px  %zu cibles  %zu avec texte  "
+                    "%zu lignes hors boite\n",
+                    cols, rows, cellx, celly, cibles.size(), lus, hors);
+        std::printf("ocr          %.0f ms (tesseract, %s)\n", t_ocr,
+                    visio::ocr_disponible() ? "present" : "ABSENT");
+        std::printf("cible        id     genre      position        texte\n");
+        for (const auto& c : cibles) {
+            std::printf("             %-5s  %-9s  %4d,%-4d %3dx%-3d  %s\n", c.id.c_str(),
+                        c.genre.c_str(), c.r.x, c.r.y, c.r.w, c.r.h,
+                        c.texte.substr(0, 40).c_str());
         }
-        std::printf("cibles       %zu dont %zu relues depuis le cache, en %.1f ms\n", total,
-                    evitees,
-                    std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - t5).count());
-    }
-
-
-    // --formes : les cibles NON textuelles. Une icone, une case, un curseur ne portent pas de
-    // texte : on les trouve par leur forme (petit bloc compact, de couleur, hors des lignes
-    // de texte) et on les etiquette par leur geometrie, faute de mieux.
-    if (g_formes) {
-        const auto t6 = std::chrono::steady_clock::now();
-        // Un petit bloc est "compact" : son aire est proche de sa boite. C'est ce qui
-        // distingue une icone d'un simple trait ou d'un aplat de fond.
-        const auto petites = visio::regions_uniformes(f, 5, 40, 0.55);
-        size_t nf = 0;
-        for (const auto& rg : petites) {
-            const visio::Rect& r = rg.rect;
-            if (r.w < 8 || r.h < 8 || r.w > 160 || r.h > 160) continue;
-            // Une icone est a peu pres carree ; une bande de couleur ne l'est pas. C'est ce
-            // qui separe un bouton d'icone d'un simple aplat de fond.
-            const double ratio = (double)r.w / (double)r.h;
-            if (ratio < 0.5 || ratio > 2.0) continue;
-            if (r.w * r.h > 4096) continue;
-            bool sur_texte = false;
-            for (const auto& l : lignes)
-                if (!visio::intersect(r, l.rect).empty()) { sur_texte = true; break; }
-            if (sur_texte) continue;
-            uint64_t id = 1469598103934665603ull;
-            const std::string gk = "f|" + std::to_string((int)fenetre) + "|" + std::to_string(r.x) +
-                                   "," + std::to_string(r.y) + "," + std::to_string(r.w) + "x" +
-                                   std::to_string(r.h);
-            for (unsigned char ch : gk) { id ^= ch; id *= 1099511628211ull; }
-            std::printf("  %016lx  forme    %4dx%-3d @%5d,%-4d  « zone sans texte »\n", id, r.w,
-                        r.h, r.x, r.y);
-            ++nf;
-        }
-        std::printf("formes       %zu cibles non textuelles en %.1f ms\n", nf,
-                    std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - t6).count());
-    }
-
-    if (g_lire && !lignes.empty()) {
-        // Une fois par fenêtre : on apprend sa typo sur les bandes les plus fournies.
-        const auto t1 = std::chrono::steady_clock::now();
-        lecteur.calibrer(f, lignes, fond);
-        const double ms = std::chrono::duration<double, std::milli>(
-                              std::chrono::steady_clock::now() - t1).count();
-        if (lecteur.police_connue())
-            std::printf("typo         %s, %.2f ms (une fois pour la fenetre)\n",
-                        lecteur.police().c_str(), ms);
-        else
-            std::printf("typo         non identifiee, %.2f ms (chaque bande cherchera)\n", ms);
-    }
-    const size_t maxl = lignes.size() < 12 ? lignes.size() : 12;
-    for (size_t i = 0; i < maxl; ++i) {
-        const auto& l = lignes[i];
-        const auto t1 = std::chrono::steady_clock::now();
-        const std::string lu = g_lire ? lecteur.lire(f, l, fond) : std::string();
-        const double ms = std::chrono::duration<double, std::milli>(
-                              std::chrono::steady_clock::now() - t1).count();
-        if (g_lire)
-            std::printf("  %4dx%-3d @ %4d,%-4d  %6.2f ms  « %s »\n", l.rect.w, l.rect.h, l.rect.x,
-                        l.rect.y, ms, lu.c_str());
-        else
-            std::printf("  %4dx%-3d @ %4d,%-4d  densite %.2f\n", l.rect.w, l.rect.h, l.rect.x,
-                        l.rect.y, l.densite);
+        std::printf("\n");
+        for (const auto& l : gr) std::printf("|%s|\n", l.c_str());
     }
 
     cap.release();
@@ -905,22 +606,24 @@ visio::Rect parse_rect(const char* s) {
 
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--lire") == 0) g_lire = true;
-        if (std::strcmp(argv[i], "--etiquettes") == 0) { g_etiquettes = true; g_lire = true; }
-        if (std::strcmp(argv[i], "--cibles") == 0) { g_cibles = true; g_lire = true; }
-        if (std::strcmp(argv[i], "--clic") == 0 && i + 1 < argc) { g_clic = argv[++i]; g_cibles = true; g_lire = true; }
+        if (std::strcmp(argv[i], "--clic") == 0 && i + 1 < argc) g_clic = argv[++i];
         if (std::strcmp(argv[i], "--taper") == 0 && i + 1 < argc) g_taper = argv[++i];
-        if (std::strcmp(argv[i], "--delta") == 0) { g_delta = true; g_cibles = true; g_lire = true; }
-        if (std::strcmp(argv[i], "--formes") == 0) { g_formes = true; g_lire = true; }
+        if (std::strcmp(argv[i], "--ecrire") == 0 && i + 2 < argc) {
+            g_ecrire = argv[i + 1];
+            g_ecrire_texte = argv[i + 2];
+            i += 2;
+        }
         if (std::strcmp(argv[i], "--dump") == 0 && i + 1 < argc) g_dump = argv[++i];
+        if (std::strcmp(argv[i], "--texte") == 0) g_texte = true;
+        if (std::strcmp(argv[i], "--verbose") == 0) g_verbeux = true;
         if (std::strcmp(argv[i], "--gestes") == 0 && i + 1 < argc) g_gestes = argv[++i];
         if (std::strcmp(argv[i], "--win") == 0 && i + 1 < argc) g_motif = argv[++i];
-        if (std::strcmp(argv[i], "--ascii") == 0) {
+        if (std::strcmp(argv[i], "--plan") == 0 || std::strcmp(argv[i], "--ascii") == 0) {
             g_ascii = true;
-            // --ascii [pas] : la taille d'une case en pixels. Le plan est a l'echelle des
-            // pixels : une case de 20 px donne 94x52 caracteres, une case de 10 px en donne
-            // 188x104 (deux fois plus fin, quatre fois plus de caracteres). Le cout se paie
-            // en jetons de contexte, pas en temps de calcul : a mesurer avant de choisir.
+            // --plan [pas] : la taille d'une case en pixels. Le plan est a l'echelle des pixels :
+            // une case de 20 px donne 94x52 caracteres, une case de 10 px en donne 188x52 (deux
+            // fois plus fin, quatre fois plus de caracteres). Le cout se paie en jetons de
+            // contexte, pas en temps de calcul : a mesurer avant de choisir.
             if (i + 1 < argc) {
                 int p = 0;
                 if (std::sscanf(argv[i + 1], "%d", &p) == 1 && p >= 1 && p <= 40) {
@@ -929,7 +632,6 @@ int main(int argc, char** argv) {
                 }
             }
         }
-        if (std::strcmp(argv[i], "--encre") == 0) g_encre = true;
         if (std::strcmp(argv[i], "--boites") == 0) {
             g_boites = true;
             // --boites [cote_min,aire_min] : les seuils, pour mesurer au lieu de deviner.

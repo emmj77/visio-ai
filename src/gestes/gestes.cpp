@@ -1,4 +1,5 @@
 // src/gestes/gestes.cpp — le geste, et la remise en place.
+#include <unistd.h>
 #include "gestes/gestes.h"
 
 #include <X11/Xutil.h>
@@ -59,7 +60,8 @@ void Contexte::rendre() {
     sauve_ = false;
 }
 
-bool Contexte::faire_le_geste(int x, int y, const std::string& texte, int bouton) {
+bool Contexte::faire_le_geste(int x, int y, const std::string& texte, int bouton,
+                              bool selectionner_tout) {
     if (!d_) return false;
     sauver();
     if (x >= 0 && y >= 0) {
@@ -68,13 +70,31 @@ bool Contexte::faire_le_geste(int x, int y, const std::string& texte, int bouton
         XTestFakeButtonEvent(d_, (unsigned)bouton, False, CurrentTime);
         XFlush(d_);
         XSync(d_, False);        // laisser le serveur traiter AVANT de remettre le pointeur
+        // Le clic et la frappe sont deux evenements SEPARES : l'application traite le clic
+        // (donner le focus au champ) apres coup. Sans cette attente, les touches partaient
+        // avant que le champ soit pret et le texte se perdait — mesure : champ reste vide.
+        usleep(150000);
+    }
+    if (selectionner_tout) {
+        const KeyCode ctrl = XKeysymToKeycode(d_, XK_Control_L);
+        const KeyCode a = XKeysymToKeycode(d_, XK_a);
+        if (ctrl && a) {
+            XTestFakeKeyEvent(d_, ctrl, True, CurrentTime);
+            XTestFakeKeyEvent(d_, a, True, CurrentTime);
+            XTestFakeKeyEvent(d_, a, False, CurrentTime);
+            XTestFakeKeyEvent(d_, ctrl, False, CurrentTime);
+            XFlush(d_);
+            XSync(d_, False);
+        }
     }
     if (!texte.empty()) {
         for (unsigned char ch : texte) {
-            KeySym ks = ch < 0x80 ? (KeySym)ch : 0;
+            // Au-dela de l'ASCII, on passe par la convention des keysyms Unicode (0x01000000 |
+            // point de code). Si la touche n'est pas mappee, le caractere est saute : mieux vaut
+            // un texte incomplet qu'un caractere faux.
+            KeySym ks = ch < 0x80 ? (KeySym)ch : (KeySym)(0x01000000u | (unsigned)ch);
             bool maj = false;
             if (ch >= 'A' && ch <= 'Z') { maj = true; }
-            else if (ch >= 0x80) { ks = 0; }
             const KeyCode kc = ks ? XKeysymToKeycode(d_, ks) : 0;
             if (!kc) continue;
             const KeyCode sh = maj ? XKeysymToKeycode(d_, XK_Shift_L) : 0;
@@ -83,6 +103,7 @@ bool Contexte::faire_le_geste(int x, int y, const std::string& texte, int bouton
             XTestFakeKeyEvent(d_, kc, False, CurrentTime);
             if (maj && sh) XTestFakeKeyEvent(d_, sh, False, CurrentTime);
             XFlush(d_);
+            usleep(12000);       // mesure : a 3 ms, il manquait des lettres (« abcde » pour 8)
         }
         XSync(d_, False);
     }

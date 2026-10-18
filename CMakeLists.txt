@@ -29,10 +29,8 @@ add_library(visio_core STATIC
   src/perceive/regions.cpp
   src/perceive/catalog.cpp
   src/perceive/text_lines.cpp
-  src/perceive/glyph.cpp
-  src/perceive/fonte.cpp
+  src/perceive/ocr.cpp
   src/gestes/gestes.cpp
-  src/perceive/forme.cpp
 )
 target_include_directories(visio_core PUBLIC src)
 target_link_libraries(visio_core PUBLIC
@@ -66,11 +64,6 @@ add_executable(unit_tile_diff tests/unit_tile_diff.cpp)
 target_link_libraries(unit_tile_diff PRIVATE visio_core)
 add_test(NAME unit_tile_diff COMMAND unit_tile_diff)
 
-add_executable(unit_glyph tests/unit_glyph.cpp)
-target_link_libraries(unit_glyph PRIVATE visio_core)
-add_test(NAME unit_glyph COMMAND unit_glyph)
-set_tests_properties(unit_glyph PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-
 add_executable(unit_text_lines tests/unit_text_lines.cpp)
 target_link_libraries(unit_text_lines PRIVATE visio_core)
 add_test(NAME unit_text_lines COMMAND unit_text_lines)
@@ -79,9 +72,10 @@ add_executable(unit_catalog tests/unit_catalog.cpp)
 target_link_libraries(unit_catalog PRIVATE visio_core)
 add_test(NAME unit_catalog COMMAND unit_catalog)
 
-add_executable(unit_forme tests/unit_forme.cpp)
-target_link_libraries(unit_forme PRIVATE visio_core)
-add_test(NAME unit_forme COMMAND unit_forme)
+add_executable(unit_ocr tests/unit_ocr.cpp)
+target_link_libraries(unit_ocr PRIVATE visio_core)
+add_test(NAME unit_ocr COMMAND unit_ocr)
+set_tests_properties(unit_ocr PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(unit_regions tests/unit_regions.cpp)
 target_link_libraries(unit_regions PRIVATE visio_core)

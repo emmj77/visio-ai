@@ -23,7 +23,10 @@ public:
 
     void sauver();
     void rendre();
-    bool faire_le_geste(int x, int y, const std::string& texte, int bouton = 1);
+    // `selectionner_tout` : avant d'ecrire, envoie Ctrl+A. C'est la semantique d'un
+    // input_text : on remplace le contenu du champ, on ne l'allonge pas.
+    bool faire_le_geste(int x, int y, const std::string& texte, int bouton = 1,
+                        bool selectionner_tout = false);
 
     // Donne le focus a une fenetre SANS la lever ni la deplacer.
     void pointer(Window w);
