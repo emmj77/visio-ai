@@ -32,6 +32,7 @@ add_library(visio_core STATIC
   src/perceive/glyph.cpp
   src/perceive/fonte.cpp
   src/gestes/gestes.cpp
+  src/perceive/forme.cpp
 )
 target_include_directories(visio_core PUBLIC src)
 target_link_libraries(visio_core PUBLIC
@@ -77,6 +78,10 @@ add_test(NAME unit_text_lines COMMAND unit_text_lines)
 add_executable(unit_catalog tests/unit_catalog.cpp)
 target_link_libraries(unit_catalog PRIVATE visio_core)
 add_test(NAME unit_catalog COMMAND unit_catalog)
+
+add_executable(unit_forme tests/unit_forme.cpp)
+target_link_libraries(unit_forme PRIVATE visio_core)
+add_test(NAME unit_forme COMMAND unit_forme)
 
 add_executable(unit_regions tests/unit_regions.cpp)
 target_link_libraries(unit_regions PRIVATE visio_core)

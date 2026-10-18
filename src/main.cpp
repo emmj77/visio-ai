@@ -7,6 +7,7 @@
 #include "capture/shm_capture.h"
 #include "common/log.h"
 #include "gestes/gestes.h"
+#include "perceive/forme.h"
 #include "core/frame.h"
 #include "perceive/catalog.h"
 #include "perceive/fonte.h"
@@ -121,148 +122,6 @@ static std::vector<std::pair<double, double>> contour_radial(const visio::Frame&
         pts.swap(lis);
     }
     return pts;
-}
-
-// DESSINER UN CONTOUR COMME LE FERAIT UN DESSINATEUR : un caractere par ligne et par cote.
-//
-// Regles prises dans la doc ASCII art, pas inventees :
-//  - « every line must connect up » (Rowan Crawford) : un cote ne peut bouger que d'UNE case
-//    d'une ligne a l'autre. Sans cette contrainte, un bord a 51 degres saute deux cases et le
-//    trait se troue ; c'est ce qui donnait des points inutiles et des cotes mal alignes.
-//  - la hauteur du caractere dans la case porte le sens : « _ » est un trait BAS dans la case,
-//    « - » un trait au milieu, « | » un trait vertical. On choisit donc d'apres la PENTE
-//    LOCALE du contour, mesuree sur ses voisins — pas d'apres un seuil de largeur.
-// Deux passes : la premiere mesure, pour chaque rangee de cases, le bord gauche, le bord droit
-// et la pente du contour a chacun ; la seconde pose les caracteres.
-static void dessiner_contour(std::vector<std::string>& gr,
-                             const std::vector<std::pair<double, double>>& pts, visio::Rect fen,
-                             int cellx, int celly, int cols, int rows) {
-    if (pts.size() < 12) return;
-    double miny = 1e18, maxy = -1e18;
-    for (const auto& p : pts) { miny = std::min(miny, p.second); maxy = std::max(maxy, p.second); }
-    const int ry0 = std::max(0, (int)std::floor((miny - fen.y) / celly));
-    const int ry1 = std::min(rows - 1, (int)std::floor((maxy - fen.y) / celly));
-    if (ry1 - ry0 < 1) return;
-
-    // Pente locale du contour au point d'indice i : |dy| / |dx| sur ses voisins (9 degres de
-    // chaque cote a l'echantillonnage de contour_radial). 0 = trait horizontal, grand = vertical.
-    const size_t n = pts.size();
-    auto pente = [&](size_t i) {
-        const auto& a = pts[(i + n - 3) % n];
-        const auto& b = pts[(i + 3) % n];
-        const double dx = std::abs(b.first - a.first), dy = std::abs(b.second - a.second);
-        return dy / std::max(1e-9, dx);
-    };
-
-    struct Rangee { int cy; double xg, xd, pg, pd; };
-    std::vector<Rangee> rr;
-    for (int cy = ry0; cy <= ry1; ++cy) {
-        const double yb0 = fen.y + (double)cy * celly, yb1 = yb0 + celly;
-        double xmin = 1e18, xmax = -1e18;
-        size_t imin = 0, imax = 0;
-        int dedans = 0;
-        for (size_t k = 0; k < n; ++k) {
-            if (pts[k].second >= yb0 && pts[k].second < yb1) {
-                if (pts[k].first < xmin) { xmin = pts[k].first; imin = k; }
-                if (pts[k].first > xmax) { xmax = pts[k].first; imax = k; }
-                ++dedans;
-            }
-        }
-        if (dedans < 2) {
-            const double yc = (yb0 + yb1) / 2.0;
-            double a1 = 1e18, a2 = -1e18;
-            size_t i1 = 0, i2 = 0;
-            for (size_t k = 0; k < n; ++k) {
-                const auto& a = pts[k];
-                const auto& b = pts[(k + 1) % n];
-                if ((a.second <= yc && b.second > yc) || (b.second <= yc && a.second > yc)) {
-                    const double u = (yc - a.second) / (b.second - a.second);
-                    const double x = a.first + u * (b.first - a.first);
-                    if (x < a1) { a1 = x; i1 = k; }
-                    if (x > a2) { a2 = x; i2 = k; }
-                }
-            }
-            if (a1 > a2) continue;
-            xmin = a1; xmax = a2; imin = i1; imax = i2;
-        }
-        rr.push_back({cy, (xmin - fen.x) / cellx, (xmax - fen.x) / cellx, pente(imin), pente(imax)});
-    }
-    // Une LAMELLE en haut ou en bas (une rangee coupee par la frontiere des cases, large de
-    // rien) n'est pas une rangee de la forme : elle ferait une barre trop large puis des cotes
-    // verticaux. On la fond dans sa voisine.
-    while (rr.size() > 3 && (rr[0].xd - rr[0].xg) * 2.0 < (rr[1].xd - rr[1].xg)) rr.erase(rr.begin());
-    while (rr.size() > 3 && (rr[rr.size() - 1].xd - rr[rr.size() - 1].xg) * 2.0 <
-                                (rr[rr.size() - 2].xd - rr[rr.size() - 2].xg))
-        rr.pop_back();
-    if (rr.size() < 3) return;
-
-    auto poser = [&](int x, int y, char c) {
-        if (x < 0 || y < 0 || x >= cols || y >= rows) return;
-        const char vieux = gr[(size_t)y][(size_t)x];
-        if (vieux == ' ' || vieux == '.' || vieux == ':' || vieux == '*' || vieux == '#')
-            gr[(size_t)y][(size_t)x] = c;
-    };
-
-    double wmax = 1e-9;
-    for (const auto& q : rr) wmax = std::max(wmax, q.xd - q.xg);
-    int cg_prec = -1000, cd_prec = -1000;
-    double xg_prec = 0, xd_prec = 0;
-    for (size_t i = 0; i < rr.size(); ++i) {
-        const int cy = rr[i].cy;
-        // FLOOR et non arrondi : la case qui CONTIENT le bord. Arrondir decalait les deux cotes
-        // d'une demi-case dans des sens differents (16,92 -> 17 mais 8,00 -> 8) et le rond
-        // sortait asymetrique — un cote en « / », l'autre en « | ».
-        int cg = (int)std::floor(rr[i].xg), cd = (int)std::floor(rr[i].xd);
-        // « every line must connect up » : un cote ne se deplace que d'une case par rangee.
-        if (cg_prec > -1000) {
-            cg = std::max(cg_prec - 1, std::min(cg_prec + 1, cg));
-            cd = std::max(cd_prec - 1, std::min(cd_prec + 1, cd));
-        }
-        // Un CHAPEAU plat (rond, bouton arrondi) occupe une bonne part de la largeur maximale
-        // des sa premiere ou sa deuxieme rangee ; une POINTE de triangle n'en occupe qu'un
-        // cinquieme. On regarde les deux rangees du chapeau, car le decoupage en cases coupe
-        // parfois le sommet en deux (une lamelle de rien, puis la vraie rangee).
-        const bool bout = (i == 0 || i + 1 == rr.size());
-        // La largeur de SA PROPRE rangee decide, pas celle de la voisine : regarder la voisine
-        // faisait passer la pointe du triangle (etroite) pour un chapeau, parce que la rangee
-        // suivante est deja large. Mesure ici : rond 0,74 de la largeur max sur sa premiere
-        // rangee, triangle 0,33. Seuil a 0,50.
-        const bool plat = bout && (rr[i].xd - rr[i].xg) >= 0.50 * wmax;
-        if (cd < cg) std::swap(cg, cd);
-        if (std::getenv("VISIO_DEBUG_FORME"))
-            std::fprintf(stderr, "FORME rangee %2d  x %6.2f..%6.2f  -> cg %3d cd %3d (prec %3d,%3d) plat %d\n",
-                         cy, rr[i].xg, rr[i].xd, cg, cd, cg_prec, cd_prec, (int)plat);
-
-        if (plat) {
-            // La barre garde SA largeur : elargie jusqu'a la rangee voisine, elle collait un
-            // « | » juste dessous et le rond ressemblait a une boite.
-            for (int x = cg; x <= cd; ++x) poser(x, cy, '_');
-            poser(cg, cy, ',');
-            poser(cd, cy, '.');
-        } else {
-            // Le CARACTERE suit le deplacement REEL du bord (en cases, fractionnaire), pas le
-            // saut entier : entre deux rangees, un bord qui glisse de 0,4 case n'a pas change de
-            // case mais il PENDU — c'est un « / », pas un « | ». Lire le saut entier donnait un
-            // cote en « / » et l'autre en « | » sur le meme rond.
-            // Pour la PREMIERE rangee, pas de precedente : on lit la suivante. Sans cela la
-            // pointe du triangle sortait en « |  | », deux barres verticales.
-            const double dgf = (cg_prec > -1000) ? rr[i].xg - xg_prec : rr[1].xg - rr[0].xg;
-            const double ddf = (cd_prec > -1000) ? rr[i].xd - xd_prec : rr[1].xd - rr[0].xd;
-            const int dg = std::abs(dgf) < 0.35 ? 0 : (dgf > 0 ? 1 : -1);
-            const int dd = std::abs(ddf) < 0.35 ? 0 : (ddf > 0 ? 1 : -1);
-            if (cd == cg) {
-                // Une pointe tient dans une case : on l'ecrit « /\\ » sur deux, sans trou.
-                poser(cg, cy, '/');
-                poser(cg + 1, cy, '\\');
-                cd = cg + 1;
-            } else {
-                poser(cg, cy, dg > 0 ? '\\' : (dg < 0 ? '/' : '|'));
-                poser(cd, cy, dd > 0 ? '\\' : (dd < 0 ? '/' : '|'));
-            }
-        }
-        cg_prec = cg; cd_prec = cd;
-        xg_prec = rr[i].xg; xd_prec = rr[i].xd;
-    }
 }
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
@@ -561,6 +420,39 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
 
         std::vector<const visio::Element*> zs;
         zs.reserve(elements.size());
+        // Le nettoyage des runs appartient a la COUCHE D'ENCRE : execute apres les formes, il
+        // effacait le second caractere d'une pointe « /\ », les deux etant contigus dans la meme
+        // rangee. Il passe donc ici, avant que les formes ne soient tracees.
+        // UN SEUL CARACTERE PAR RUN DE TRAIT, PAR LIGNE. Un cote de triangle a 51° traverse
+        // 1,3 case par ligne (13 px pour une case de 20 px de haut) : il allumait donc deux
+        // caracteres par ligne et ressortait double. On regroupe les cases contigues portant
+        // un trait non horizontal et on ne garde que celle qui porte le plus d'encre : le
+        // cote devient une suite de « / » d'un caractere, comme un dessin a la main.
+        // Les traits horizontaux ne sont pas touches : une ligne de « - » est deja continue.
+        for (int cy = 0; cy < rows; ++cy) {
+            int x = 0;
+            while (x < cols) {
+                const char c0 = gr[(size_t)cy][(size_t)x];
+                if (c0 != '|' && c0 != '/' && c0 != '\\') { ++x; continue; }
+                int fin = x;
+                while (fin + 1 < cols) {
+                    const char c1 = gr[(size_t)cy][(size_t)fin + 1];
+                    if (c1 != '|' && c1 != '/' && c1 != '\\') break;
+                    ++fin;
+                }
+                if (fin > x) {
+                    int garde = x;
+                    for (int i = x + 1; i <= fin; ++i)
+                        if (ncar[(size_t)cy * (size_t)cols + (size_t)i] >
+                            ncar[(size_t)cy * (size_t)cols + (size_t)garde])
+                            garde = i;
+                    for (int i = x; i <= fin; ++i)
+                        if (i != garde) gr[(size_t)cy][(size_t)i] = ' ';
+                }
+                x = fin + 1;
+            }
+        }
+
         for (const auto& e : elements) zs.push_back(&e);
         std::sort(zs.begin(), zs.end(),
                   [](const visio::Element* a, const visio::Element* b) {
@@ -629,7 +521,9 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 // l'encre deja posee et la forme ressort doublee.
                 for (int y = y0; y <= y1; ++y)
                     for (int x = x0; x <= x1; ++x) gr[(size_t)y][(size_t)x] = ' ';
-                dessiner_contour(gr, contour, f.region, cellx, celly, cols, rows);
+                // MODELE d'abord, dessin ensuite : une ellipse ou un polygone, pas des largeurs.
+                const visio::Forme modele = visio::analyser_forme(contour);
+                visio::dessiner_forme(gr, modele, f.region, cellx, celly, cols, rows);
                 std::string lab = std::string(nom(e->genre)) + " " + id;
                 const int place = std::max(0, x1 - x0);
                 // etiquette sous la forme, pour ne pas la recouvrir
@@ -697,40 +591,22 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 for (size_t k = 0; k < lab.size(); ++k) gr[(size_t)y0 + 1][(size_t)x0 + 1 + k] = lab[k];
             }
         }
-        // UN SEUL CARACTERE PAR RUN DE TRAIT, PAR LIGNE. Un cote de triangle a 51° traverse
-        // 1,3 case par ligne (13 px pour une case de 20 px de haut) : il allumait donc deux
-        // caracteres par ligne et ressortait double. On regroupe les cases contigues portant
-        // un trait non horizontal et on ne garde que celle qui porte le plus d'encre : le
-        // cote devient une suite de « / » d'un caractere, comme un dessin a la main.
-        // Les traits horizontaux ne sont pas touches : une ligne de « - » est deja continue.
-        for (int cy = 0; cy < rows; ++cy) {
-            int x = 0;
-            while (x < cols) {
-                const char c0 = gr[(size_t)cy][(size_t)x];
-                if (c0 != '|' && c0 != '/' && c0 != '\\') { ++x; continue; }
-                int fin = x;
-                while (fin + 1 < cols) {
-                    const char c1 = gr[(size_t)cy][(size_t)fin + 1];
-                    if (c1 != '|' && c1 != '/' && c1 != '\\') break;
-                    ++fin;
-                }
-                if (fin > x) {
-                    int garde = x;
-                    for (int i = x + 1; i <= fin; ++i)
-                        if (ncar[(size_t)cy * (size_t)cols + (size_t)i] >
-                            ncar[(size_t)cy * (size_t)cols + (size_t)garde])
-                            garde = i;
-                    for (int i = x; i <= fin; ++i)
-                        if (i != garde) gr[(size_t)cy][(size_t)i] = ' ';
-                }
-                x = fin + 1;
-            }
-        }
         std::printf("\nplan         %dx%d cases de %dx%d px (1 caractere = 1 case), %zu zones dont "
                     "%zu formes non rectangulaires\n", cols, rows, cellx, celly, elements.size(),
                     formes);
         std::printf("encre        ' ' rien  '.' trait  ':' clairseme  '*' dense  '#' plein\n");
         std::printf("             - | / \\ trait fin oriente (un rond, un triangle, une diagonale)\n");
+        // VISIO_DEBUG_PLAN : les coordonnees EXACTES de chaque caractere, pour comparer avec le
+        // modele sans se tromper de decalage en lisant la sortie a l'oeil.
+        if (std::getenv("VISIO_DEBUG_PLAN")) {
+            int yy = 0;
+            for (const auto& l : gr) {
+                std::printf("DBGPLAN r=%3d", yy++);
+                for (size_t x = 0; x < l.size(); ++x)
+                    if (l[x] != ' ') std::printf(" %zu:%c", x, l[x]);
+                std::printf("\n");
+            }
+        }
         for (const auto& l : gr) std::printf("|%s|\n", l.c_str());
     }
 
