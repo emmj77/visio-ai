@@ -175,51 +175,62 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     }
 
 
-    // --ascii : LA PAGE VUE EN TEXTE. Chaque case de la grille resume un carre de pixels :
-    //   ' ' fond uniforme          '.' encre clairsemee (du texte)
-    //   'o' objet de taille moyenne (icone, case)   '#' aplat dense (image, panneau)
-    // L'agent recoit une carte, pas une image : quelques centaines de caracteres pour un
-    // ecran entier, et il peut raisonner dessus comme sur un schema.
+    // --ascii : LA PAGE EN PLAN. Ce n'est pas une carte de densite, c'est un PLAN : les
+    // zones du catalogue sont dessinees avec leur cadre et leur nom, la plus grande d'abord
+    // puis les plus petites par-dessus. L'agent lit la structure, pas une texture.
     if (g_ascii) {
-        const int cell = 25;   // pixels par caractere (reglable par le 2e argument du mode)
-        const int cols = f.region.w / cell, rows = f.region.h / cell;
-        const uint32_t fnd = visio::couleur_fond(f, 3);
-        const int fr2 = (int)((fnd >> 16) & 0xFF), fg2 = (int)((fnd >> 8) & 0xFF),
-                  fb2 = (int)(fnd & 0xFF);
-        std::printf("\nascii        %dx%d cases de %d px (fond #%06x)\n", cols, rows, cell, fnd);
-        for (int cy = 0; cy < rows; ++cy) {
-            std::string ligne;
-            for (int cx = 0; cx < cols; ++cx) {
-                int64_t encre = 0, total = 0, somme = 0, somme2 = 0;
-                for (int yy = cy * cell; yy < (cy + 1) * cell && yy < f.region.h; ++yy) {
-                    const uint32_t* row = f.px.data() + (size_t)yy * f.region.w;
-                    for (int xx = cx * cell; xx < (cx + 1) * cell && xx < f.region.w; ++xx) {
-                        const uint32_t p = row[xx];
-                        const int dr = std::abs((int)((p >> 16) & 0xFF) - fr2);
-                        const int dg = std::abs((int)((p >> 8) & 0xFF) - fg2);
-                        const int db = std::abs((int)(p & 0xFF) - fb2);
-                        if (dr > 24 || dg > 24 || db > 24) ++encre;
-                        const int lum = ((int)((p >> 16) & 0xFF) + (int)((p >> 8) & 0xFF) +
-                                         (int)(p & 0xFF)) / 3;
-                        somme += lum;
-                        somme2 += lum * lum;
-                        ++total;
-                    }
-                }
-                if (total == 0) { ligne += ' '; continue; }
-                const double d = (double)encre / (double)total;
-                const double moy = (double)somme / (double)total;
-                const double var = (double)somme2 / (double)total - moy * moy;
-                const double ecart_type = var > 0 ? std::sqrt(var) : 0.0;
-                // Une case uniforme mais d'une autre couleur qu'un aplat : c'est un panneau.
-                if (d < 0.02) ligne += ' ';
-                else if (ecart_type < 6.0) ligne += '-';
-                else if (d < 0.28) ligne += '.';
-                else if (d < 0.65) ligne += 'o';
-                else ligne += '#';
+        const int cell = 20;
+        const int cols = std::max(1, f.region.w / cell), rows = std::max(1, f.region.h / cell);
+        std::vector<std::string> gr((size_t)rows, std::string((size_t)cols, ' '));
+        auto nom = [](visio::Genre x) -> const char* {
+            switch (x) {
+                case visio::Genre::Fenetre: return "fenetre";
+                case visio::Genre::Panneau: return "panneau";
+                case visio::Genre::Barre:   return "barre";
+                case visio::Genre::Bouton:  return "bouton";
+                case visio::Genre::Champ:   return "champ";
+                case visio::Genre::Texte:   return "texte";
+                default: return "zone";
             }
-            std::printf("|%s|\n", ligne.c_str());
+        };
+        std::vector<const visio::Element*> zs;
+        zs.reserve(elements.size());
+        for (const auto& e : elements) zs.push_back(&e);
+        std::sort(zs.begin(), zs.end(),
+                  [](const visio::Element* a, const visio::Element* b) {
+                      return a->rect.area() > b->rect.area();
+                  });
+        for (const auto* e : zs) {
+            const visio::Rect& r = e->rect;
+            int x0 = (r.x - f.region.x) / cell, y0 = (r.y - f.region.y) / cell;
+            int x1 = (r.x + r.w - f.region.x) / cell, y1 = (r.y + r.h - f.region.y) / cell;
+            x0 = std::max(0, std::min(x0, cols - 1)); x1 = std::max(0, std::min(x1, cols - 1));
+            y0 = std::max(0, std::min(y0, rows - 1)); y1 = std::max(0, std::min(y1, rows - 1));
+            if (x1 - x0 < 3 || y1 - y0 < 2) continue;
+            for (int x = x0; x <= x1; ++x) {
+                if (gr[(size_t)y0][(size_t)x] == ' ') gr[(size_t)y0][(size_t)x] = '-';
+                if (gr[(size_t)y1][(size_t)x] == ' ') gr[(size_t)y1][(size_t)x] = '-';
+            }
+            for (int y = y0; y <= y1; ++y) {
+                if (gr[(size_t)y][(size_t)x0] == ' ') gr[(size_t)y][(size_t)x0] = '|';
+                if (gr[(size_t)y][(size_t)x1] == ' ') gr[(size_t)y][(size_t)x1] = '|';
+            }
+            gr[(size_t)y0][(size_t)x0] = '+'; gr[(size_t)y0][(size_t)x1] = '+';
+            gr[(size_t)y1][(size_t)x0] = '+'; gr[(size_t)y1][(size_t)x1] = '+';
+            // Etiquette : genre + debut d'identifiant, TOUJOURS rognee a la largeur du cadre,
+            // sinon le plan devient illisible (la bordure disparait).
+            char id[12];
+            std::snprintf(id, sizeof id, "%06lx", (unsigned long)(e->id & 0xFFFFFF));
+            std::string lab = std::string(" ") + nom(e->genre) + " " + id + " ";
+            const int place = x1 - x0 - 1;
+            if (y0 + 1 < y1 && place > 3) {
+                if ((int)lab.size() > place) lab = lab.substr(0, (size_t)place);
+                for (size_t k = 0; k < lab.size(); ++k) gr[(size_t)y0 + 1][(size_t)x0 + 1 + k] = lab[k];
+            }
         }
+        std::printf("\nplan         %dx%d cases de %d px, %zu zones\n", cols, rows, cell,
+                    elements.size());
+        for (const auto& l : gr) std::printf("|%s|\n", l.c_str());
     }
 
     // --cibles : la decoupe FINE. Un mot = une cible ; chaque cible porte un identifiant et
