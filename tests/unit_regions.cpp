@@ -3,6 +3,8 @@
 #include "perceive/regions.h"
 
 #include <cstdio>
+#include <algorithm>
+#include <cmath>
 
 using namespace visio;
 
@@ -81,6 +83,146 @@ int main() {
         Region* n = trouver(r4, 0xFF000000u);
         CHECK(n != nullptr);
         if (n) CHECK((n->rect == Rect{10, 10, 40, 20}));
+    }
+
+    // ---- boites fermees ---------------------------------------------------------
+    // Un cadre : un trait continu qui se referme. Une region pleine, une croix, un trait
+    // isole et une lettre ne sont pas des cadres.
+    {
+        Frame p = Frame::pour(Rect{0, 0, 200, 120});
+        p.remplir(0xFFFFFFFFu);
+        for (int x = 20; x < 100; ++x) { p.set(x, 10, 0xFF808080u); p.set(x, 49, 0xFF808080u); }
+        for (int y = 10; y < 50; ++y) { p.set(20, y, 0xFF808080u); p.set(99, y, 0xFF808080u); }
+
+        auto cadre = boites_fermees(p);          // seuils par defaut : 14 / 600 / 0,65
+        CHECK(cadre.size() == 1);
+        if (cadre.size() == 1) {
+            CHECK((cadre[0].rect == Rect{20, 10, 80, 40}));
+            CHECK(cadre[0].remplissage < 0.20);          // un trait, pas un aplat
+            CHECK(cadre[0].pixels == 2 * 80 + 2 * 40 - 4);
+        }
+        // la meme chose vue par les regions uniformes : elle est jetee (trop trouee)
+        auto pleines = regions_uniformes(p, 5, 64, 0.55);
+        CHECK(trouver(pleines, 0xFF808080u) == nullptr);
+    }
+
+    // une region PLEINE n'est pas un cadre (elle est deja une region)
+    {
+        Frame p = Frame::pour(Rect{0, 0, 200, 120});
+        p.remplir(0xFFFFFFFFu);
+        for (int y = 20; y < 80; ++y) for (int x = 30; x < 130; ++x) p.set(x, y, 0xFF808080u);
+        CHECK(boites_fermees(p).empty());
+    }
+
+    // une CROIX touche les quatre bords de sa boite, mais ne se referme pas
+    {
+        Frame p = Frame::pour(Rect{0, 0, 200, 120});
+        p.remplir(0xFFFFFFFFu);
+        for (int x = 20; x < 180; ++x) p.set(x, 60, 0xFF808080u);
+        for (int y = 10; y < 110; ++y) p.set(100, y, 0xFF808080u);
+        CHECK(boites_fermees(p).empty());
+    }
+
+    // coins ARRONDIS : le coeur de la boite est intact, les coins sortent du test
+    {
+        Frame p = Frame::pour(Rect{0, 0, 200, 120});
+        p.remplir(0xFFFFFFFFu);
+        const int x0 = 20, y0 = 20, x1 = 139, y1 = 89, r = 6;
+        // Un trait de 1 px : on marque les pixels dont la distance au bord du rectangle
+        // arrondi tombe dans [-1, 0]. C'est un vrai contour continu, pas des points.
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                const double dx = std::max({(double)(x0 + r - x), (double)(x - (x1 - r)), 0.0});
+                const double dy = std::max({(double)(y0 + r - y), (double)(y - (y1 - r)), 0.0});
+                const double d = std::sqrt(dx * dx + dy * dy) - r;
+                if (d > -1.0 && d <= 0.0) p.set(x, y, 0xFF808080u);
+            }
+        auto cadre = boites_fermees(p, 8, 14, 600, 0.65);
+        CHECK(cadre.size() == 1);
+        if (cadre.size() == 1) CHECK((cadre[0].rect == Rect{x0, y0, x1 - x0 + 1, y1 - y0 + 1}));
+    }
+
+    // le FOND n'est pas une boite : il entoure tout et ses murs passent
+    {
+        Frame p = Frame::pour(Rect{0, 0, 300, 200});
+        p.remplir(0xFFFFFFFFu);
+        for (int x = 10; x < 290; ++x) { p.set(x, 10, 0xFF404040u); p.set(x, 189, 0xFF404040u); }
+        for (int y = 10; y < 190; ++y) { p.set(10, y, 0xFF404040u); p.set(289, y, 0xFF404040u); }
+        auto cadres = boites_fermees(p);
+        CHECK(cadres.size() == 1);
+        if (cadres.size() == 1) CHECK((cadres[0].rect == Rect{10, 10, 280, 180}));
+    }
+
+    // une LETTRE fermee (taille de texte courant) n'est pas une boite
+    {
+        Frame p = Frame::pour(Rect{0, 0, 100, 60});
+        p.remplir(0xFFFFFFFFu);
+        for (int x = 10; x < 25; ++x) { p.set(x, 10, 0xFF000000u); p.set(x, 27, 0xFF000000u); }
+        for (int y = 10; y < 28; ++y) { p.set(10, y, 0xFF000000u); p.set(24, y, 0xFF000000u); }
+        CHECK(boites_fermees(p).empty());            // 15x18 : sous les seuils
+        CHECK(boites_fermees(p, 8, 8, 100, 0.65).size() == 1);   // et si on les baisse, elle sort
+    }
+
+    // un ROND : ce n'est pas un rectangle, le test est topologique et doit le voir
+    {
+        Frame p = Frame::pour(Rect{0, 0, 200, 160});
+        p.remplir(0xFFFFFFFFu);
+        const int cx = 100, cy = 80, r = 40;
+        for (int y = 0; y < 160; ++y)
+            for (int x = 0; x < 200; ++x) {
+                const double d = std::sqrt((double)((x - cx) * (x - cx) + (y - cy) * (y - cy)));
+                if (d > r - 1.0 && d <= r) p.set(x, y, 0xFF2050A0u);   // un anneau de 1 px
+            }
+        auto cadres = boites_fermees(p, 8, 14, 600, 0.65);
+        CHECK(cadres.size() == 1);
+        if (cadres.size() == 1) {
+            CHECK(cadres[0].rect.w >= 2 * r - 2 && cadres[0].rect.w <= 2 * r + 1);
+            CHECK(cadres[0].rect.h >= 2 * r - 2 && cadres[0].rect.h <= 2 * r + 1);
+        }
+        // un disque PLEIN est une region, pas un cadre
+        Frame q = Frame::pour(Rect{0, 0, 200, 160});
+        q.remplir(0xFFFFFFFFu);
+        for (int y = 0; y < 160; ++y)
+            for (int x = 0; x < 200; ++x) {
+                const double d = std::sqrt((double)((x - cx) * (x - cx) + (y - cy) * (y - cy)));
+                if (d <= r) q.set(x, y, 0xFF2050A0u);
+            }
+        CHECK(boites_fermees(q, 8, 14, 600, 0.65).empty());
+    }
+
+    // un TRIANGLE : trois traits qui se rejoignent, aucun mur horizontal ni vertical
+    {
+        Frame p = Frame::pour(Rect{0, 0, 200, 160});
+        p.remplir(0xFFFFFFFFu);
+        const int ax = 100, ay = 20, bx = 20, by = 140, cx2 = 180, cy2 = 140;
+        auto trait = [&p](int x0, int y0, int x1, int y1) {
+            const int pas = std::max(std::abs(x1 - x0), std::abs(y1 - y0));
+            for (int i = 0; i <= pas; ++i) {
+                const int x = x0 + (x1 - x0) * i / std::max(1, pas);
+                const int y = y0 + (y1 - y0) * i / std::max(1, pas);
+                p.set(x, y, 0xFF306030u);
+            }
+        };
+        trait(ax, ay, bx, by); trait(bx, by, cx2, cy2); trait(cx2, cy2, ax, ay);
+        auto cadres = boites_fermees(p, 8, 14, 600, 0.65);
+        CHECK(cadres.size() == 1);
+        if (cadres.size() == 1) CHECK((cadres[0].rect == Rect{bx, ay, cx2 - bx + 1, by - ay + 1}));
+    }
+
+    // boites IMBRIQUEES : la grande et la petite, de la plus grande a la plus petite
+    {
+        Frame p = Frame::pour(Rect{0, 0, 300, 200});
+        p.remplir(0xFFFFFFFFu);
+        for (int x = 10; x < 290; ++x) { p.set(x, 10, 0xFF404040u); p.set(x, 189, 0xFF404040u); }
+        for (int y = 10; y < 190; ++y) { p.set(10, y, 0xFF404040u); p.set(289, y, 0xFF404040u); }
+        for (int x = 50; x < 150; ++x) { p.set(x, 50, 0xFF404040u); p.set(x, 99, 0xFF404040u); }
+        for (int y = 50; y < 100; ++y) { p.set(50, y, 0xFF404040u); p.set(149, y, 0xFF404040u); }
+        auto cadres = boites_fermees(p);
+        CHECK(cadres.size() == 2);
+        if (cadres.size() == 2) {
+            CHECK((cadres[0].rect == Rect{10, 10, 280, 180}));   // la plus grande d'abord
+            CHECK((cadres[1].rect == Rect{50, 50, 100, 50}));
+        }
     }
 
     std::printf("unit_regions : %d reussis, %d echecs\n", g_pass, g_fail);

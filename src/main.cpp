@@ -39,6 +39,9 @@ bool g_delta = false;      // --delta : ne rendre que ce qui a change depuis le 
 bool g_formes = false;     // --formes : les cibles NON textuelles (icones, cases, curseurs)
 std::string g_dump;        // --dump "x,y,w,h fichier.ppm" : sortir les pixels d'une zone
 bool g_ascii = false;      // --ascii : un schema ASCII de la page, pour l'agent
+bool g_boites = false;     // --boites : les cadres fermes (boutons, cartes, panneaux)
+int  g_cote_min = 14;      // plus petit cote d'un cadre accepte
+int  g_aire_min = 600;     // aire minimale de la boite (pas du trait)
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -68,6 +71,22 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     std::printf("zone         %s %dx%d en %d,%d\n", quoi, zone.w, zone.h, zone.x, zone.y);
     std::printf("capture      %.2f ms   segmentation %.2f ms   %zu regions retenues\n",
                 t_cap, t_seg, regions.size());
+
+    // Les CADRES : une bordure continue qui se referme. Une bordure de 1 px sur une boite
+    // 500x400 occupe 9 % de son aire, donc `regions_uniformes` la jette : c'est pour cela
+    // que le plan ASCII ne montrait aucun bouton. On les demande separement.
+    t0 = std::chrono::steady_clock::now();
+    const auto boites = visio::boites_fermees(f, 8, g_cote_min, g_aire_min, 0.65);
+    const double t_boites = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - t0).count();
+    std::printf("boites       %zu cadres fermes en %.2f ms\n", boites.size(), t_boites);
+    if (g_boites) {
+        for (const auto& b : boites)
+            std::printf("  boite  %4dx%-4d @ %4d,%-4d  trait #%06x  remplissage %.2f  %6ld px\n",
+                        b.rect.w, b.rect.h, b.rect.x, b.rect.y, b.couleur & 0xFFFFFF,
+                        b.remplissage, (long)b.pixels);
+    }
+
     const size_t max = regions.size() < 20 ? regions.size() : 20;
     for (size_t i = 0; i < max; ++i) {
         const auto& r = regions[i];
@@ -76,10 +95,21 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                     r.remplissage, (long)r.pixels);
     }
 
+    // Le catalogue recoit les DEUX lectures : les aplats et les cadres. Sans les cadres, un
+    // bouton se reduit a son interieur et le plan ASCII ne montre pas la boite. Dedoublonnage
+    // sur le rectangle exact (un cadre et son aplat interieur n'ont jamais le meme rect).
+    std::vector<visio::Region> toutes = regions;
+    for (const auto& b : boites) {
+        bool deja = false;
+        for (const auto& r : regions)
+            if (r.rect == b.rect) { deja = true; break; }
+        if (!deja) toutes.push_back(b);
+    }
+
     // Le catalogue : ce que le modèle lira. Identifiants stables, genres devinés.
     t0 = std::chrono::steady_clock::now();
     visio::Catalogue cat;
-    const auto& elements = cat.maj(fenetre, regions);
+    const auto& elements = cat.maj(fenetre, toutes);
     const double t_cat = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - t0).count();
     std::printf("\ncatalogue    %zu elements en %.2f ms (%zu glyphes ecartes)\n",
@@ -472,6 +502,18 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--formes") == 0) { g_formes = true; g_lire = true; }
         if (std::strcmp(argv[i], "--dump") == 0 && i + 1 < argc) g_dump = argv[++i];
         if (std::strcmp(argv[i], "--ascii") == 0) g_ascii = true;
+        if (std::strcmp(argv[i], "--boites") == 0) {
+            g_boites = true;
+            // --boites [cote_min,aire_min] : les seuils, pour mesurer au lieu de deviner.
+            if (i + 1 < argc) {
+                int c = 0, a = 0;
+                if (std::sscanf(argv[i + 1], "%d,%d", &c, &a) == 2 && c > 0 && a > 0) {
+                    g_cote_min = c;
+                    g_aire_min = a;
+                    ++i;
+                }
+            }
+        }
     }
 
     Display* d = XOpenDisplay(nullptr);

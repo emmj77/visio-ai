@@ -25,4 +25,23 @@ std::vector<Region> regions_uniformes(const Frame& f, int quant = 5,
                                       int64_t aire_min = 64,
                                       double remplissage_min = 0.55);
 
+// Les BOÎTES FERMÉES : un bouton, une carte, un panneau, un champ, un rond, un triangle.
+// L'idée est topologique, pas géométrique : une forme est « fermée » quand elle sépare un
+// intérieur de l'extérieur. On la lit comme de l'ENCRE (pixel qui s'écarte du fond), on
+// noie l'extérieur depuis le bord de sa boîte, et ce que l'eau ne touche pas est un
+// intérieur. Un cadre, un rond, un triangle passent ; un trait, une croix, une lettre
+// laissent tout communiquer et échouent.
+// Pourquoi l'encre et non la couleur : une bordure de 1 px est antialiasée sur ses coins,
+// chaque pixel d'arc a sa propre couleur, et une lecture par couleur casse le cadre en
+// quatre morceaux (mesuré : coins arrondis = 0 boîte par couleur, 1 par encre).
+//   seuil_encre     : écart par canal au-delà duquel un pixel est de l'encre
+//   cote_min        : plus petit côté accepté (une lettre fait moins)
+//   aire_min        : aire de la boîte (pas du trait)
+//   remplissage_max : au-delà, c'est une région pleine, déjà vue par `regions_uniformes`
+//   fond            : 0 = couleur dominante de la frame, calculée ici
+// `couleur` est celle du trait, `pixels` celui du trait. Trié par aire décroissante.
+std::vector<Region> boites_fermees(const Frame& f, int seuil_encre = 8, int cote_min = 14,
+                                   int64_t aire_min = 600, double remplissage_max = 0.65,
+                                   uint32_t fond = 0);
+
 } // namespace visio
