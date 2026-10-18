@@ -6,6 +6,7 @@
 #include "capture/screen_info.h"
 #include "capture/shm_capture.h"
 #include "common/log.h"
+#include "gestes/gestes.h"
 #include "core/frame.h"
 #include "perceive/catalog.h"
 #include "perceive/fonte.h"
@@ -38,6 +39,8 @@ std::string g_taper;       // --taper <texte> : ecrire au clavier, caractere par
 bool g_delta = false;      // --delta : ne rendre que ce qui a change depuis le dernier scan
 bool g_formes = false;     // --formes : les cibles NON textuelles (icones, cases, curseurs)
 std::string g_dump;        // --dump "x,y,w,h fichier.ppm" : sortir les pixels d'une zone
+std::string g_gestes;      // --gestes "x,y,texte" : un geste constate, pour les tests
+std::string g_motif;       // --win <morceau de titre> : la fenetre visee par un geste
 bool g_ascii = false;      // --ascii : un schema ASCII de la page, pour l'agent
 bool g_boites = false;     // --boites : les cadres fermes (boutons, cartes, panneaux)
 int  g_cote_min = 10;      // plus petit cote d'un cadre accepte
@@ -77,7 +80,7 @@ static std::vector<std::pair<double, double>> contour_radial(const visio::Frame&
         // Le MILIEU de la derniere plage d'encre, pas son dernier pixel : le trait fait 2 a 4 px,
         // prendre le bord exterieur fait vibrer le rayon d'un pixel et le contour devient
         // hache. On note les plages, puis on garde le milieu de la derniere.
-        double debut_plage = -1, fin_plage = -1, d_plage = -1;
+        double debut_plage = -1, fin_plage = -1;
         double dernier_debut = -1, dernier_fin = -1;
         for (double d = 1.0; d < rmax; d += 0.5) {
             const int x = (int)std::lround(cx + dx * d), y = (int)std::lround(cy + dy * d);
@@ -85,7 +88,6 @@ static std::vector<std::pair<double, double>> contour_radial(const visio::Frame&
             if (encre(x, y)) {
                 if (debut_plage < 0) debut_plage = d;
                 fin_plage = d;
-                d_plage = d;
             } else if (debut_plage >= 0) {
                 if (fin_plage - debut_plage >= 0.5) { dernier_debut = debut_plage; dernier_fin = fin_plage; }
                 debut_plage = -1;
@@ -122,54 +124,76 @@ static std::vector<std::pair<double, double>> contour_radial(const visio::Frame&
 }
 
 // DESSINER UN CONTOUR COMME LE FERAIT UN DESSINATEUR : un caractere par ligne et par cote.
-// Deux passes. La premiere mesure, pour chaque rangee de cases, le bord gauche et le bord droit
-// de la forme (en cases, en flottant) : c'est le contour echantillonne. La seconde pose les
-// caracteres d'apres la PENTE de chaque bord entre deux rangees — « | » quand il ne bouge pas,
-// « / » ou « \ » quand il se decale — et un trait horizontal en haut et en bas.
-// Regles tirees des tutoriels : la ligne doit se raccorder (Rowan Crawford, « every line must
-// connect up »), et un trait horizontal en bas de case s'ecrit « _ », au milieu « - »
-// (alt.ascii-art : high ` ' ", middle - =, low . , bottom _).
+//
+// Regles prises dans la doc ASCII art, pas inventees :
+//  - « every line must connect up » (Rowan Crawford) : un cote ne peut bouger que d'UNE case
+//    d'une ligne a l'autre. Sans cette contrainte, un bord a 51 degres saute deux cases et le
+//    trait se troue ; c'est ce qui donnait des points inutiles et des cotes mal alignes.
+//  - la hauteur du caractere dans la case porte le sens : « _ » est un trait BAS dans la case,
+//    « - » un trait au milieu, « | » un trait vertical. On choisit donc d'apres la PENTE
+//    LOCALE du contour, mesuree sur ses voisins — pas d'apres un seuil de largeur.
+// Deux passes : la premiere mesure, pour chaque rangee de cases, le bord gauche, le bord droit
+// et la pente du contour a chacun ; la seconde pose les caracteres.
 static void dessiner_contour(std::vector<std::string>& gr,
                              const std::vector<std::pair<double, double>>& pts, visio::Rect fen,
                              int cellx, int celly, int cols, int rows) {
-    if (pts.size() < 6) return;
+    if (pts.size() < 12) return;
     double miny = 1e18, maxy = -1e18;
     for (const auto& p : pts) { miny = std::min(miny, p.second); maxy = std::max(maxy, p.second); }
     const int ry0 = std::max(0, (int)std::floor((miny - fen.y) / celly));
     const int ry1 = std::min(rows - 1, (int)std::floor((maxy - fen.y) / celly));
     if (ry1 - ry0 < 1) return;
 
-    struct Rangee { int cy; double xg, xd; };
+    // Pente locale du contour au point d'indice i : |dy| / |dx| sur ses voisins (9 degres de
+    // chaque cote a l'echantillonnage de contour_radial). 0 = trait horizontal, grand = vertical.
+    const size_t n = pts.size();
+    auto pente = [&](size_t i) {
+        const auto& a = pts[(i + n - 3) % n];
+        const auto& b = pts[(i + 3) % n];
+        const double dx = std::abs(b.first - a.first), dy = std::abs(b.second - a.second);
+        return dy / std::max(1e-9, dx);
+    };
+
+    struct Rangee { int cy; double xg, xd, pg, pd; };
     std::vector<Rangee> rr;
     for (int cy = ry0; cy <= ry1; ++cy) {
         const double yb0 = fen.y + (double)cy * celly, yb1 = yb0 + celly;
         double xmin = 1e18, xmax = -1e18;
+        size_t imin = 0, imax = 0;
         int dedans = 0;
-        for (const auto& q : pts) {
-            if (q.second >= yb0 && q.second < yb1) {
-                xmin = std::min(xmin, q.first);
-                xmax = std::max(xmax, q.first);
+        for (size_t k = 0; k < n; ++k) {
+            if (pts[k].second >= yb0 && pts[k].second < yb1) {
+                if (pts[k].first < xmin) { xmin = pts[k].first; imin = k; }
+                if (pts[k].first > xmax) { xmax = pts[k].first; imax = k; }
                 ++dedans;
             }
         }
         if (dedans < 2) {
             const double yc = (yb0 + yb1) / 2.0;
             double a1 = 1e18, a2 = -1e18;
-            for (size_t k = 0; k < pts.size(); ++k) {
+            size_t i1 = 0, i2 = 0;
+            for (size_t k = 0; k < n; ++k) {
                 const auto& a = pts[k];
-                const auto& b = pts[(k + 1) % pts.size()];
+                const auto& b = pts[(k + 1) % n];
                 if ((a.second <= yc && b.second > yc) || (b.second <= yc && a.second > yc)) {
                     const double u = (yc - a.second) / (b.second - a.second);
                     const double x = a.first + u * (b.first - a.first);
-                    a1 = std::min(a1, x);
-                    a2 = std::max(a2, x);
+                    if (x < a1) { a1 = x; i1 = k; }
+                    if (x > a2) { a2 = x; i2 = k; }
                 }
             }
             if (a1 > a2) continue;
-            xmin = a1; xmax = a2;
+            xmin = a1; xmax = a2; imin = i1; imax = i2;
         }
-        rr.push_back({cy, (xmin - fen.x) / cellx, (xmax - fen.x) / cellx});
+        rr.push_back({cy, (xmin - fen.x) / cellx, (xmax - fen.x) / cellx, pente(imin), pente(imax)});
     }
+    // Une LAMELLE en haut ou en bas (une rangee coupee par la frontiere des cases, large de
+    // rien) n'est pas une rangee de la forme : elle ferait une barre trop large puis des cotes
+    // verticaux. On la fond dans sa voisine.
+    while (rr.size() > 3 && (rr[0].xd - rr[0].xg) * 2.0 < (rr[1].xd - rr[1].xg)) rr.erase(rr.begin());
+    while (rr.size() > 3 && (rr[rr.size() - 1].xd - rr[rr.size() - 1].xg) * 2.0 <
+                                (rr[rr.size() - 2].xd - rr[rr.size() - 2].xg))
+        rr.pop_back();
     if (rr.size() < 3) return;
 
     auto poser = [&](int x, int y, char c) {
@@ -178,40 +202,66 @@ static void dessiner_contour(std::vector<std::string>& gr,
         if (vieux == ' ' || vieux == '.' || vieux == ':' || vieux == '*' || vieux == '#')
             gr[(size_t)y][(size_t)x] = c;
     };
+
+    double wmax = 1e-9;
+    for (const auto& q : rr) wmax = std::max(wmax, q.xd - q.xg);
+    int cg_prec = -1000, cd_prec = -1000;
+    double xg_prec = 0, xd_prec = 0;
     for (size_t i = 0; i < rr.size(); ++i) {
         const int cy = rr[i].cy;
+        // FLOOR et non arrondi : la case qui CONTIENT le bord. Arrondir decalait les deux cotes
+        // d'une demi-case dans des sens differents (16,92 -> 17 mais 8,00 -> 8) et le rond
+        // sortait asymetrique — un cote en « / », l'autre en « | ».
         int cg = (int)std::floor(rr[i].xg), cd = (int)std::floor(rr[i].xd);
-        const size_t v = (i == 0) ? 1 : i - 1;
-        const double largeur = rr[i].xd - rr[i].xg;
-        const double largeur_v = rr[v].xd - rr[v].xg;
-        // Un TRAIT horizontal en haut ou en bas seulement si la rangee est large et que la
-        // voisine l'est autant : un sommet de triangle est etroit et pentu, il s'ecrit « /\\ »,
-        // pas une barre. Un rond a un sommet plat de plusieurs cases, il s'ecrit « ____ ».
-        // Un sommet PLAT (rond, bouton arrondi) occupe deja une bonne part de la largeur
-        // maximale ; une POINTE de triangle n'en occupe qu'un cinquieme. C'est ce rapport, et
-        // non la pente, qui distingue « ____ » de « /\\ ».
-        double wmax = 1e-9;
-        for (const auto& q : rr) wmax = std::max(wmax, q.xd - q.xg);
-        const bool plat = (i == 0) ? (largeur >= 1.5 && largeur >= 0.35 * wmax) : (largeur >= 1.5);
-        if ((i == 0 || i + 1 == rr.size()) && plat) {
-            // La barre part de sa propre largeur, debordee d'au plus 1,5 case vers la rangee
-            // voisine : assez pour que le cote oblique la TOUCHE, pas assez pour transformer un
-            // sommet de rond en toit de maison.
-            cg = (int)std::floor(std::max(rr[v].xg, rr[i].xg - 1.5));
-            cd = (int)std::floor(std::min(rr[v].xd, rr[i].xd + 1.5));
+        // « every line must connect up » : un cote ne se deplace que d'une case par rangee.
+        if (cg_prec > -1000) {
+            cg = std::max(cg_prec - 1, std::min(cg_prec + 1, cg));
+            cd = std::max(cd_prec - 1, std::min(cd_prec + 1, cd));
+        }
+        // Un CHAPEAU plat (rond, bouton arrondi) occupe une bonne part de la largeur maximale
+        // des sa premiere ou sa deuxieme rangee ; une POINTE de triangle n'en occupe qu'un
+        // cinquieme. On regarde les deux rangees du chapeau, car le decoupage en cases coupe
+        // parfois le sommet en deux (une lamelle de rien, puis la vraie rangee).
+        const bool bout = (i == 0 || i + 1 == rr.size());
+        // La largeur de SA PROPRE rangee decide, pas celle de la voisine : regarder la voisine
+        // faisait passer la pointe du triangle (etroite) pour un chapeau, parce que la rangee
+        // suivante est deja large. Mesure ici : rond 0,74 de la largeur max sur sa premiere
+        // rangee, triangle 0,33. Seuil a 0,50.
+        const bool plat = bout && (rr[i].xd - rr[i].xg) >= 0.50 * wmax;
+        if (cd < cg) std::swap(cg, cd);
+        if (std::getenv("VISIO_DEBUG_FORME"))
+            std::fprintf(stderr, "FORME rangee %2d  x %6.2f..%6.2f  -> cg %3d cd %3d (prec %3d,%3d) plat %d\n",
+                         cy, rr[i].xg, rr[i].xd, cg, cd, cg_prec, cd_prec, (int)plat);
+
+        if (plat) {
+            // La barre garde SA largeur : elargie jusqu'a la rangee voisine, elle collait un
+            // « | » juste dessous et le rond ressemblait a une boite.
             for (int x = cg; x <= cd; ++x) poser(x, cy, '_');
             poser(cg, cy, ',');
             poser(cd, cy, '.');
-            continue;
+        } else {
+            // Le CARACTERE suit le deplacement REEL du bord (en cases, fractionnaire), pas le
+            // saut entier : entre deux rangees, un bord qui glisse de 0,4 case n'a pas change de
+            // case mais il PENDU — c'est un « / », pas un « | ». Lire le saut entier donnait un
+            // cote en « / » et l'autre en « | » sur le meme rond.
+            // Pour la PREMIERE rangee, pas de precedente : on lit la suivante. Sans cela la
+            // pointe du triangle sortait en « |  | », deux barres verticales.
+            const double dgf = (cg_prec > -1000) ? rr[i].xg - xg_prec : rr[1].xg - rr[0].xg;
+            const double ddf = (cd_prec > -1000) ? rr[i].xd - xd_prec : rr[1].xd - rr[0].xd;
+            const int dg = std::abs(dgf) < 0.35 ? 0 : (dgf > 0 ? 1 : -1);
+            const int dd = std::abs(ddf) < 0.35 ? 0 : (ddf > 0 ? 1 : -1);
+            if (cd == cg) {
+                // Une pointe tient dans une case : on l'ecrit « /\\ » sur deux, sans trou.
+                poser(cg, cy, '/');
+                poser(cg + 1, cy, '\\');
+                cd = cg + 1;
+            } else {
+                poser(cg, cy, dg > 0 ? '\\' : (dg < 0 ? '/' : '|'));
+                poser(cd, cy, dd > 0 ? '\\' : (dd < 0 ? '/' : '|'));
+            }
         }
-        // Sens de deplacement du bord en DESCENDANT (pour la premiere rangee, on regarde la
-        // suivante) : c'est lui qui donne « / », « | » ou « \ ».
-        const double dg = (i == 0) ? rr[1].xg - rr[0].xg : rr[i].xg - rr[i - 1].xg;
-        const double dd = (i == 0) ? rr[1].xd - rr[0].xd : rr[i].xd - rr[i - 1].xd;
-        const char gl = std::abs(dg) < 0.35 ? '|' : (dg > 0 ? '\\' : '/');
-        const char dr = std::abs(dd) < 0.35 ? '|' : (dd > 0 ? '\\' : '/');
-        poser(cg, cy, gl);
-        if (cd > cg) poser(cd, cy, dr);
+        cg_prec = cg; cd_prec = cd;
+        xg_prec = rr[i].xg; xd_prec = rr[i].xd;
     }
 }
 
@@ -772,12 +822,14 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                     // deplace, on appuie, on relache. Rien d'autre n'est n
                     if (!g_clic.empty() && !deja_clique && txt.find(g_clic) != std::string::npos) {
                         const int cx = r.x + r.w / 2, cy = r.y + r.h / 2;
-                        XTestFakeMotionEvent(d, -1, cx, cy, CurrentTime);
-                        XTestFakeButtonEvent(d, 1, True, CurrentTime);
-                        XTestFakeButtonEvent(d, 1, False, CurrentTime);
-                        XFlush(d);
-                        std::printf("clic         sur « %s » au centre %d,%d (id %016lx)\n",
-                                    txt.c_str(), cx, cy, id);
+                        // Le geste passe par visio::Contexte : focus donne a la cible sans la
+                        // lever, clic, puis pointeur et focus REMIS en place (docs/GESTES.md).
+                        visio::Contexte ctx(d);
+                        ctx.pointer(fenetre);
+                        ctx.faire_le_geste(cx, cy, "");
+                        std::printf("clic         sur « %s » au centre %d,%d (id %016lx) ; pointeur "
+                                    "rendu a %d,%d\n", txt.c_str(), cx, cy, id,
+                                    ctx.pointeur_x_apres(), ctx.pointeur_y_apres());
                         deja_clique = true;
                     }
                 }
@@ -922,6 +974,8 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--delta") == 0) { g_delta = true; g_cibles = true; g_lire = true; }
         if (std::strcmp(argv[i], "--formes") == 0) { g_formes = true; g_lire = true; }
         if (std::strcmp(argv[i], "--dump") == 0 && i + 1 < argc) g_dump = argv[++i];
+        if (std::strcmp(argv[i], "--gestes") == 0 && i + 1 < argc) g_gestes = argv[++i];
+        if (std::strcmp(argv[i], "--win") == 0 && i + 1 < argc) g_motif = argv[++i];
         if (std::strcmp(argv[i], "--ascii") == 0) {
             g_ascii = true;
             // --ascii [pas] : la taille d'une case en pixels. Le plan est a l'echelle des
@@ -955,33 +1009,59 @@ int main(int argc, char** argv) {
         VISIO_ERROR("impossible d'ouvrir le serveur X (%s)", XDisplayName(nullptr));
         return 1;
     }
-    // --taper : le geste clavier. Les touches partent vers la fenetre qui a le focus ; sous
-    // Xvfb sans gestionnaire de fenetres, c'est celle qui se trouve sous le pointeur.
-    // L'agent ecrit donc sans lire un seul pixel.
+    // La fenetre visee par un geste, pour lui donner le focus sans la lever.
+    Window fenetre_visee = 0;
+    if (!g_motif.empty())
+        for (const auto& w : visio::list_windows(d, true))
+            if (w.title.find(g_motif) != std::string::npos) { fenetre_visee = w.id; break; }
+
+    // --taper : le geste clavier, DANS UN CONTEXTE REVERSIBLE (pointeur et focus rendus a la
+    // fin). La frappe part vers la fenetre au focus : c'est la limite de XTest, documentee
+    // dans docs/GESTES.md, et uinput ne la contourne pas.
     if (!g_taper.empty()) {
-        int n = 0;
-        for (unsigned char ch : g_taper) {
-            std::string nom;
-            if (ch == ' ') nom = "space";
-            else if (ch == '\n') nom = "Return";
-            else if (ch == '\t') nom = "Tab";
-            else nom = std::string(1, (char)ch);
-            const KeySym ks = XStringToKeysym(nom.c_str());
-            if (ks == NoSymbol) continue;
-            const KeyCode kc = XKeysymToKeycode(d, ks);
-            if (!kc) continue;
-            const bool maj = (ch >= 'A' && ch <= 'Z');
-            const KeyCode sh = maj ? XKeysymToKeycode(d, XK_Shift_L) : 0;
-            if (maj) XTestFakeKeyEvent(d, sh, True, CurrentTime);
-            XTestFakeKeyEvent(d, kc, True, CurrentTime);
-            XTestFakeKeyEvent(d, kc, False, CurrentTime);
-            if (maj) XTestFakeKeyEvent(d, sh, False, CurrentTime);
-            XFlush(d);
-            ++n;
-        }
-        std::printf("taper        %d touches envoyees\n", n);
+        visio::Contexte ctx(d);
+        ctx.pointer(fenetre_visee);
+        ctx.faire_le_geste(-1, -1, g_taper);
+        std::printf("taper        %zu caracteres ; pointeur rendu a %d,%d (avant %d,%d) ; focus rendu\n",
+                    g_taper.size(), ctx.pointeur_x_apres(), ctx.pointeur_y_apres(), ctx.pointeur_x(),
+                    ctx.pointeur_y());
         XCloseDisplay(d);
         return 0;
+    }
+
+    // --gestes "x,y,texte" : le meme geste, mais on CONSTATE au lieu de supposer. Sert au test
+    // sous Xvfb (tests/gestes_xvfb.sh) : les evenements doivent arriver, le pointeur revenir et
+    // le focus etre rendu.
+    if (!g_gestes.empty()) {
+        int x = -1, y = -1;
+        std::string t;
+        {
+            const size_t p1 = g_gestes.find(',');
+            const size_t p2 = (p1 == std::string::npos) ? std::string::npos : g_gestes.find(',', p1 + 1);
+            if (p1 != std::string::npos && p2 != std::string::npos) {
+                x = std::atoi(g_gestes.substr(0, p1).c_str());
+                y = std::atoi(g_gestes.substr(p1 + 1, p2 - p1 - 1).c_str());
+                t = g_gestes.substr(p2 + 1);
+            }
+        }
+        const int lus = (x >= 0 && y >= 0) ? 3 : 0;
+        visio::Contexte ctx(d);
+        ctx.sauver();
+        const int avant_x = ctx.pointeur_x(), avant_y = ctx.pointeur_y();
+        const unsigned long focus_avant = (unsigned long)ctx.focus_avant();
+        // Sans point de clic, on vise la FENETRE : le focus lui est donne le temps de la
+        // frappe, puis rendu. C'est le cas d'usage reel — taper dans une fenetre qui n'a pas
+        // le focus, sans le lui laisser.
+        if (lus < 2 && fenetre_visee) ctx.pointer(fenetre_visee);
+        ctx.faire_le_geste((lus >= 2) ? x : -1, (lus >= 2) ? y : -1, t);
+        const unsigned long focus_apres = (unsigned long)ctx.focus_apres();
+        std::printf("gestes       pointeur %d,%d -> %d,%d  focus %#lx -> %#lx  texte « %s »\n",
+                    avant_x, avant_y, ctx.pointeur_x_apres(), ctx.pointeur_y_apres(), focus_avant,
+                    focus_apres, t.c_str());
+        const bool ok = (avant_x == ctx.pointeur_x_apres() && avant_y == ctx.pointeur_y_apres());
+        std::printf("gestes       %s\n", ok ? "pointeur rendu : OUI" : "pointeur rendu : NON");
+        XCloseDisplay(d);
+        return ok ? 0 : 5;
     }
 
 

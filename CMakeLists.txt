@@ -31,6 +31,7 @@ add_library(visio_core STATIC
   src/perceive/text_lines.cpp
   src/perceive/glyph.cpp
   src/perceive/fonte.cpp
+  src/gestes/gestes.cpp
 )
 target_include_directories(visio_core PUBLIC src)
 target_link_libraries(visio_core PUBLIC
