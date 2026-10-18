@@ -17,6 +17,7 @@
 #include <X11/extensions/XTest.h>
 #include <X11/keysym.h>
 
+#include <cmath>
 #include <map>
 #include <fstream>
 #include <filesystem>
@@ -37,6 +38,7 @@ std::string g_taper;       // --taper <texte> : ecrire au clavier, caractere par
 bool g_delta = false;      // --delta : ne rendre que ce qui a change depuis le dernier scan
 bool g_formes = false;     // --formes : les cibles NON textuelles (icones, cases, curseurs)
 std::string g_dump;        // --dump "x,y,w,h fichier.ppm" : sortir les pixels d'une zone
+bool g_ascii = false;      // --ascii : un schema ASCII de la page, pour l'agent
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -169,6 +171,54 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
             std::printf("dump         %zu pixels -> %s\n", ecrits, fic);
         } else {
             std::printf("dump         format attendu : \"x,y,w,h fichier.ppm\"\n");
+        }
+    }
+
+
+    // --ascii : LA PAGE VUE EN TEXTE. Chaque case de la grille resume un carre de pixels :
+    //   ' ' fond uniforme          '.' encre clairsemee (du texte)
+    //   'o' objet de taille moyenne (icone, case)   '#' aplat dense (image, panneau)
+    // L'agent recoit une carte, pas une image : quelques centaines de caracteres pour un
+    // ecran entier, et il peut raisonner dessus comme sur un schema.
+    if (g_ascii) {
+        const int cell = 25;   // pixels par caractere (reglable par le 2e argument du mode)
+        const int cols = f.region.w / cell, rows = f.region.h / cell;
+        const uint32_t fnd = visio::couleur_fond(f, 3);
+        const int fr2 = (int)((fnd >> 16) & 0xFF), fg2 = (int)((fnd >> 8) & 0xFF),
+                  fb2 = (int)(fnd & 0xFF);
+        std::printf("\nascii        %dx%d cases de %d px (fond #%06x)\n", cols, rows, cell, fnd);
+        for (int cy = 0; cy < rows; ++cy) {
+            std::string ligne;
+            for (int cx = 0; cx < cols; ++cx) {
+                int64_t encre = 0, total = 0, somme = 0, somme2 = 0;
+                for (int yy = cy * cell; yy < (cy + 1) * cell && yy < f.region.h; ++yy) {
+                    const uint32_t* row = f.px.data() + (size_t)yy * f.region.w;
+                    for (int xx = cx * cell; xx < (cx + 1) * cell && xx < f.region.w; ++xx) {
+                        const uint32_t p = row[xx];
+                        const int dr = std::abs((int)((p >> 16) & 0xFF) - fr2);
+                        const int dg = std::abs((int)((p >> 8) & 0xFF) - fg2);
+                        const int db = std::abs((int)(p & 0xFF) - fb2);
+                        if (dr > 24 || dg > 24 || db > 24) ++encre;
+                        const int lum = ((int)((p >> 16) & 0xFF) + (int)((p >> 8) & 0xFF) +
+                                         (int)(p & 0xFF)) / 3;
+                        somme += lum;
+                        somme2 += lum * lum;
+                        ++total;
+                    }
+                }
+                if (total == 0) { ligne += ' '; continue; }
+                const double d = (double)encre / (double)total;
+                const double moy = (double)somme / (double)total;
+                const double var = (double)somme2 / (double)total - moy * moy;
+                const double ecart_type = var > 0 ? std::sqrt(var) : 0.0;
+                // Une case uniforme mais d'une autre couleur qu'un aplat : c'est un panneau.
+                if (d < 0.02) ligne += ' ';
+                else if (ecart_type < 6.0) ligne += '-';
+                else if (d < 0.28) ligne += '.';
+                else if (d < 0.65) ligne += 'o';
+                else ligne += '#';
+            }
+            std::printf("|%s|\n", ligne.c_str());
         }
     }
 
@@ -410,6 +460,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--delta") == 0) { g_delta = true; g_cibles = true; g_lire = true; }
         if (std::strcmp(argv[i], "--formes") == 0) { g_formes = true; g_lire = true; }
         if (std::strcmp(argv[i], "--dump") == 0 && i + 1 < argc) g_dump = argv[++i];
+        if (std::strcmp(argv[i], "--ascii") == 0) g_ascii = true;
     }
 
     Display* d = XOpenDisplay(nullptr);
