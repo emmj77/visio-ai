@@ -23,7 +23,8 @@
 
 namespace {
 
-bool g_lire = false;   // --lire : reconnaître les caractères par leur forme
+bool g_lire = false;       // --lire : reconnaître les caractères par leur forme
+bool g_etiquettes = false; // --etiquettes : nommer chaque élément par son texte
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -78,6 +79,46 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
         ++n;
     }
 
+    // --etiquettes : le pipeline complet, en passes successives.
+    //   1. l'ecran est lu et decoupe en elements (catalogue) ;
+    //   2. chaque element est recadre, et son texte lu par empreintes de formes (CPU) ;
+    //   3. l'element sort avec son etiquette : c'est ce que l'agent recevra, avec un id.
+    if (g_etiquettes) {
+        const auto t3 = std::chrono::steady_clock::now();
+        size_t nommes = 0;
+        double pire = 0.0;
+        visio::Lecteur lecteur;
+        std::printf("\netiquettes   (recadrage + lecture, element par element)\n");
+        for (const auto& e : elements) {
+            const visio::Rect r = visio::intersect(e.rect, f.region);
+            if (r.empty() || r.w < 20 || r.h < 8) continue;
+            visio::Frame g = visio::Frame::pour(r);
+            for (int y = 0; y < r.h; ++y)
+                std::memcpy(g.px.data() + (size_t)y * r.w,
+                            f.px.data() + (size_t)(y + r.y - f.region.y) * f.region.w +
+                                (r.x - f.region.x),
+                            (size_t)r.w * 4);
+            const uint32_t fg_ = visio::couleur_fond(g, 3);
+            const auto ls = visio::lignes_de_texte(g, fg_);
+            const auto t4 = std::chrono::steady_clock::now();
+            std::string txt;
+            for (const auto& l : ls) {
+                const std::string t = lecteur.lire(g, l, fg_);
+                if (!t.empty()) { txt += t; txt += ' '; }
+            }
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - t4).count();
+            pire = std::max(pire, ms);
+            if (txt.empty()) continue;
+            std::printf("  %4dx%-4d @%4d,%-4d  %6.2f ms  « %s »\n", r.w, r.h, r.x, r.y, ms,
+                        txt.substr(0, 46).c_str());
+            ++nommes;
+        }
+        std::printf("etiquettes   %zu nommees, pire cas %.2f ms, total %.1f ms\n", nommes, pire,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t3).count());
+    }
+
     // Les lignes de texte : ce que le catalogue écarte, la couche texte le regroupe.
     const uint32_t fond = visio::couleur_fond(f, 3);
     t0 = std::chrono::steady_clock::now();
@@ -128,8 +169,10 @@ visio::Rect parse_rect(const char* s) {
 } // namespace
 
 int main(int argc, char** argv) {
-    for (int i = 1; i < argc; ++i)
+    for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--lire") == 0) g_lire = true;
+        if (std::strcmp(argv[i], "--etiquettes") == 0) { g_etiquettes = true; g_lire = true; }
+    }
 
     Display* d = XOpenDisplay(nullptr);
     if (!d) {
