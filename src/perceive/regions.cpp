@@ -353,4 +353,81 @@ std::vector<Region> boites_fermees(const Frame& f, int seuil_encre, int cote_min
     return out;
 }
 
+std::vector<Region> aplats_bordes(const Frame& f, const std::vector<Region>& aplats,
+                                  int epaisseur, int ecart_min, int64_t aire_min) {
+    std::vector<Region> out;
+    if (f.vide()) return out;
+    const int W = f.region.w, H = f.region.h;
+    for (const auto& a : aplats) {
+        if (a.rect.area() < aire_min) continue;
+        if (a.remplissage < 0.90) continue;             // une forme trouée : déjà traitée
+        const int w = a.rect.w, h = a.rect.h;
+        if (w < 2 * epaisseur + 8 || h < 2 * epaisseur + 8) continue;
+        const int x0 = a.rect.x - f.region.x, y0 = a.rect.y - f.region.y;
+        if (x0 < 0 || y0 < 0 || x0 + w > W || y0 + h > H) continue;
+        // Le fond de la fenêtre n'est pas un bouton : il couvre tout.
+        if ((int64_t)w * h * 100 >= (int64_t)W * H * 98) continue;
+        auto px = [&](int x, int y) -> uint32_t {
+            return f.px[(size_t)(y0 + y) * (size_t)W + (size_t)(x0 + x)];
+        };
+        // 1. Deux bandes AUTOUR du rect : à 1 px (le trait s'il existe) et à 4 px (le fond
+        //    de la page). Une bordure existe si les deux diffèrent — sinon c'est un aplat
+        //    qui contraste avec le fond, et ce n'est pas un cadre.
+        auto bande = [&](int d0, int d1, int& mr, int& mg, int& mb, int64_t& n) {
+            int64_t rr = 0, gg = 0, bb = 0;
+            n = 0;
+            for (int y = -d1; y < h + d1; ++y)
+                for (int x = -d1; x < w + d1; ++x) {
+                    const int dx = x < 0 ? -x : (x >= w ? x - w + 1 : 0);
+                    const int dy = y < 0 ? -y : (y >= h ? y - h + 1 : 0);
+                    const int d = std::max(dx, dy);
+                    if (d < d0 || d > d1) continue;
+                    const int X = x0 + x, Y = y0 + y;
+                    if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+                    const uint32_t c = f.px[(size_t)Y * (size_t)W + (size_t)X];
+                    rr += (c >> 16) & 0xFF; gg += (c >> 8) & 0xFF; bb += c & 0xFF; ++n;
+                }
+            if (n == 0) return false;
+            mr = (int)(rr / n); mg = (int)(gg / n); mb = (int)(bb / n);
+            return true;
+        };
+        int br = 0, bg = 0, bb2 = 0, pr = 0, pg = 0, pb = 0;
+        int64_t n_bord = 0, n_page = 0;
+        if (!bande(epaisseur, epaisseur, br, bg, bb2, n_bord)) continue;   // trop au bord
+        if (!bande(epaisseur + 2, epaisseur + 3, pr, pg, pb, n_page)) continue;
+        if (n_bord * 3 < n_page) continue;
+        const int ecart_bord = std::max(std::abs(br - pr),
+                                        std::max(std::abs(bg - pg), std::abs(bb2 - pb)));
+        if (ecart_bord < ecart_min) continue;             // pas de trait : un simple aplat
+        // 2. L'intérieur : y a-t-il UNE couleur nette majoritaire ? Un bouton porte du texte,
+        //    donc « uniforme » serait faux : on demande une couleur dominante (>= 55 % des
+        //    pixels). Une ligne de texte, elle, n'a pas de fond majoritaire.
+        int32_t hist[4096] = {0};
+        int64_t ni = 0;
+        const int i0 = 2;
+        for (int y = i0; y < h - i0; ++y)
+            for (int x = i0; x < w - i0; ++x) {
+                const uint32_t c = px(x, y);
+                const int q = (int)(((c >> 12) & 0xF00) | ((c >> 8) & 0xF0) | ((c >> 4) & 0xF));
+                if (hist[q] < 30000) ++hist[q];
+                ++ni;
+            }
+        if (ni < 25) continue;
+        int32_t mode = 0;
+        for (int i = 0; i < 4096; ++i) if (hist[i] > mode) mode = hist[i];
+        if ((int64_t)mode * 100 < ni * 55) continue;    // bigarré : du texte, pas un bouton
+        // 3. La bordure existe (elle diffère du fond de la page) : c'est un cadre.
+        Region rg{a.rect,
+                  0xFF000000u | ((uint32_t)br << 16) | ((uint32_t)bg << 8) | (uint32_t)bb2,
+                  n_bord, (double)n_bord / (double)a.rect.area()};
+        rg.cadre = true;
+        rg.sur_bord = 1.0;
+        out.push_back(rg);
+    }
+    std::sort(out.begin(), out.end(), [](const Region& p, const Region& q) {
+        return p.rect.area() > q.rect.area();
+    });
+    return out;
+}
+
 } // namespace visio

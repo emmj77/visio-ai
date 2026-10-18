@@ -77,10 +77,33 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     // 500x400 occupe 9 % de son aire, donc `regions_uniformes` la jette : c'est pour cela
     // que le plan ASCII ne montrait aucun bouton. On les demande separement.
     t0 = std::chrono::steady_clock::now();
-    const auto boites = visio::boites_fermees(f, 8, g_cote_min, g_aire_min, 0.65);
+    std::vector<visio::Region> boites =
+        visio::boites_fermees(f, 8, g_cote_min, g_aire_min, 0.65);
     const double t_boites = std::chrono::duration<double, std::milli>(
                                 std::chrono::steady_clock::now() - t0).count();
-    std::printf("boites       %zu cadres fermes en %.2f ms\n", boites.size(), t_boites);
+    // Les APLATS BORDES : un bouton a fond teinte est une region pleine, pas un cadre. Si
+    // son interieur est UNI et que son bord porte une autre teinte, la bordure est reelle.
+    // Mais l'interieur d'un cadre est lui aussi un aplat borde (sa bordure est celle du
+    // cadre) : on l'ecarte par inclusion, sinon chaque boite sort deux fois.
+    auto dedans = [](const visio::Rect& petit, const visio::Rect& grand) {
+        return petit.x >= grand.x - 1 && petit.y >= grand.y - 1 &&
+               petit.x + petit.w <= grand.x + grand.w + 1 &&
+               petit.y + petit.h <= grand.y + grand.h + 1;
+    };
+    t0 = std::chrono::steady_clock::now();
+    for (auto& b : visio::aplats_bordes(f, regions)) {
+        bool deja = false;
+        for (const auto& r : boites)
+            if (dedans(b.rect, r.rect)) { deja = true; break; }
+        if (!deja) boites.push_back(b);
+    }
+    std::sort(boites.begin(), boites.end(), [](const visio::Region& p, const visio::Region& q) {
+        return p.rect.area() > q.rect.area();
+    });
+    const double t_bordes = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - t0).count();
+    std::printf("boites       %zu cadres fermes en %.2f ms (dont aplats bordes %.2f ms)\n",
+                boites.size(), t_boites, t_bordes);
     if (g_boites) {
         for (const auto& b : boites)
             std::printf("  boite %4dx%-4d @ %4d,%-4d trait #%06x remplissage %.2f bord %.2f %6ld px\n",

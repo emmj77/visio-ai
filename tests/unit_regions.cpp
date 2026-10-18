@@ -186,6 +186,32 @@ int main() {
         }
     }
 
+    // un BOUTON A FOND TEINTE : 1 px de trait #a0a0a0, interieur #efefef, sur du blanc.
+    // C'est une REGION pleine (remplissage 0,97) : `boites_fermees` l'ecarte. Mais la
+    // bordure existe, donc `aplats_bordes` doit la retrouver.
+    {
+        Frame p = Frame::pour(Rect{0, 0, 200, 120});
+        p.remplir(0xFFFFFFFFu);
+        for (int y = 20; y < 60; ++y)
+            for (int x = 30; x < 150; ++x) p.set(x, y, 0xFFEFEFEFu);
+        for (int x = 30; x < 150; ++x) { p.set(x, 20, 0xFFA0A0A0u); p.set(x, 59, 0xFFA0A0A0u); }
+        for (int y = 20; y < 60; ++y) { p.set(30, y, 0xFFA0A0A0u); p.set(149, y, 0xFFA0A0A0u); }
+        auto aplats = regions_uniformes(p, 5, 64, 0.55);
+        CHECK(boites_fermees(p).empty());            // remplissage 0,97 : pas un cadre
+        auto b = aplats_bordes(p, aplats);
+        CHECK(b.size() == 1);
+        if (b.size() == 1) {
+            CHECK(b[0].cadre);
+            CHECK((int)(b[0].couleur & 0xFF) < 0xC0);   // le trait est gris, pas l'interieur
+        }
+        // le MEME aplat sans trait : un simple aplat, pas un cadre
+        Frame q = Frame::pour(Rect{0, 0, 200, 120});
+        q.remplir(0xFFFFFFFFu);
+        for (int y = 20; y < 60; ++y)
+            for (int x = 30; x < 150; ++x) q.set(x, y, 0xFFEFEFEFu);
+        CHECK(aplats_bordes(q, regions_uniformes(q, 5, 64, 0.55)).empty());
+    }
+
     // un ROND : ce n'est pas un rectangle, le test est topologique et doit le voir
     {
         Frame p = Frame::pour(Rect{0, 0, 200, 160});

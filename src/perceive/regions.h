@@ -55,4 +55,16 @@ std::vector<Region> boites_fermees(const Frame& f, int seuil_encre = 8, int cote
                                    int64_t aire_min = 150, double remplissage_max = 0.65,
                                    uint32_t fond = 0, double bord_min_petit = 0.80);
 
+// Les APLATS BORDÉS : un bouton dont le fond diffère du fond de page n'est pas un cadre —
+// c'est une région pleine, et `boites_fermees` l'écarte (remplissage 0,95). Mais si son bord
+// porte une teinte distincte et que son intérieur est UNI, la bordure est réelle et mérite
+// d'être dans le plan.
+// Discriminant : intérieur uniforme (>= 90 % des pixels à ±6 de la moyenne) ET une BORDURE
+// réelle — la bande à 1 px du rect diffère de celle à 4 px (le fond de la page). Un aplat
+// qui contraste simplement avec le fond n'a pas de trait : il reste un aplat. Une ligne de
+// texte a un intérieur bigarré et tombe d'elle-même.
+std::vector<Region> aplats_bordes(const Frame& f, const std::vector<Region>& aplats,
+                                  int epaisseur = 1, int ecart_min = 10,
+                                  int64_t aire_min = 150);
+
 } // namespace visio
