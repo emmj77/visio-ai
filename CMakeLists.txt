@@ -27,10 +27,12 @@ add_library(visio_core STATIC
   src/perceive/windows.cpp
   src/perceive/regions.cpp
   src/perceive/catalog.cpp
+  src/perceive/text_lines.cpp
+  src/perceive/ocr.cpp
 )
 target_include_directories(visio_core PUBLIC src)
 target_link_libraries(visio_core PUBLIC
-  PkgConfig::X11 PkgConfig::XEXT PkgConfig::XDAMAGE PkgConfig::XFIXES)
+  PkgConfig::X11 PkgConfig::XEXT PkgConfig::XDAMAGE PkgConfig::XFIXES ${CMAKE_DL_LIBS})
 
 # --- binaire principal --------------------------------------------------
 add_executable(visio src/main.cpp)
@@ -68,6 +70,16 @@ add_test(NAME unit_merge COMMAND unit_merge)
 add_executable(unit_tile_diff tests/unit_tile_diff.cpp)
 target_link_libraries(unit_tile_diff PRIVATE visio_core)
 add_test(NAME unit_tile_diff COMMAND unit_tile_diff)
+
+add_executable(unit_text_lines tests/unit_text_lines.cpp)
+target_link_libraries(unit_text_lines PRIVATE visio_core)
+add_test(NAME unit_text_lines COMMAND unit_text_lines)
+
+add_executable(integration_ocr tests/integration_ocr.cpp)
+target_link_libraries(integration_ocr PRIVATE visio_core)
+add_test(NAME integration_ocr COMMAND integration_ocr)
+set_tests_properties(integration_ocr PROPERTIES SKIP_RETURN_CODE 77
+                       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(unit_catalog tests/unit_catalog.cpp)
 target_link_libraries(unit_catalog PRIVATE visio_core)
