@@ -2,6 +2,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 namespace visio {
 
@@ -69,6 +70,43 @@ inline void for_each_tile(const Rect& r, int q, F&& f) {
             f(Rect{tx, ty, std::min(q, r.right() - tx), std::min(q, r.bottom() - ty)});
         }
     }
+}
+
+// Enveloppe gonflée de g pixels sur chaque bord.
+inline constexpr Rect inflate(const Rect& r, int g) noexcept {
+    if (r.empty()) return {};
+    return {r.x - g, r.y - g, r.w + 2 * g, r.h + 2 * g};
+}
+
+// Fusionne des rectangles proches : deux rectangles sont réunis dès que leurs enveloppes
+// gonflées de `gap` se touchent. But : ne pas capturer dix fois une même zone.
+// Le résultat est trié (y, x) et ne dépend pas de l'ordre d'entrée.
+inline std::vector<Rect> merge_rects(std::vector<Rect> in, int gap = 0) {
+    in.erase(std::remove_if(in.begin(), in.end(), [](const Rect& r) { return r.empty(); }), in.end());
+    if (in.size() < 2) return in;
+
+    std::sort(in.begin(), in.end(), [](const Rect& a, const Rect& b) {
+        return a.y != b.y ? a.y < b.y : a.x < b.x;
+    });
+
+    bool fusion = true;
+    while (fusion) {
+        fusion = false;
+        for (size_t i = 0; i < in.size() && !fusion; ++i) {
+            for (size_t j = i + 1; j < in.size(); ++j) {
+                if (!intersect(inflate(in[i], gap), inflate(in[j], gap)).empty()) {
+                    in[i] = unite(in[i], in[j]);
+                    in.erase(in.begin() + (long)j);
+                    fusion = true;
+                    break;
+                }
+            }
+        }
+    }
+    std::sort(in.begin(), in.end(), [](const Rect& a, const Rect& b) {
+        return a.y != b.y ? a.y < b.y : a.x < b.x;
+    });
+    return in;
 }
 
 } // namespace visio

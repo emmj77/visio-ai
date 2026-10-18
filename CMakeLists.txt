@@ -21,9 +21,11 @@ pkg_check_modules(XFIXES  REQUIRED IMPORTED_TARGET xfixes)
 # --- noyau : aucune socket, aucun protocole, seulement la machine -------
 add_library(visio_core STATIC
   src/capture/screen_info.cpp
+  src/capture/damage_watch.cpp
 )
 target_include_directories(visio_core PUBLIC src)
-target_link_libraries(visio_core PUBLIC PkgConfig::X11 PkgConfig::XEXT)
+target_link_libraries(visio_core PUBLIC
+  PkgConfig::X11 PkgConfig::XEXT PkgConfig::XDAMAGE PkgConfig::XFIXES)
 
 # --- binaire principal --------------------------------------------------
 add_executable(visio src/main.cpp)
@@ -41,3 +43,12 @@ enable_testing()
 add_executable(unit_rect tests/unit_rect.cpp)
 target_link_libraries(unit_rect PRIVATE visio_core)
 add_test(NAME unit_rect COMMAND unit_rect)
+
+add_executable(unit_merge tests/unit_merge.cpp)
+target_link_libraries(unit_merge PRIVATE visio_core)
+add_test(NAME unit_merge COMMAND unit_merge)
+
+add_executable(integration_damage tests/integration_damage.cpp)
+target_link_libraries(integration_damage PRIVATE visio_core)
+add_test(NAME integration_damage COMMAND integration_damage)
+set_tests_properties(integration_damage PROPERTIES SKIP_RETURN_CODE 77)
