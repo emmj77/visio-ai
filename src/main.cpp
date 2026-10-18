@@ -234,8 +234,13 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     // rectangulaire ne le dit pas). Puis la STRUCTURE : les zones du catalogue avec leur
     // cadre et leur nom, la plus grande d'abord, les plus petites par-dessus.
     if (g_ascii) {
-        const int cell = g_pas;
-        const int cols = std::max(1, f.region.w / cell), rows = std::max(1, f.region.h / cell);
+        // L'ECHELLE. Un caractere de terminal est DEUX fois plus haut que large : avec des
+        // cases carrees en pixels (10x10), la page sortait etiree en hauteur et un rond
+        // ressemblait a un oeuf. Une case doit valoir UN caractere a l'ecran, donc 2 fois
+        // plus haute que large : 10 x 20 px. Le plan garde alors les proportions de l'ecran.
+        const int cellx = g_pas, celly = g_pas * 2;
+        const int cols = std::max(1, f.region.w / cellx);
+        const int rows = std::max(1, f.region.h / celly);
         std::vector<std::string> gr((size_t)rows, std::string((size_t)cols, ' '));
         auto nom = [](visio::Genre x) -> const char* {
             switch (x) {
@@ -257,18 +262,18 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                       fb = (int)(fond & 0xFF);
             for (int y = 0; y < f.region.h; ++y) {
                 const uint32_t* p = f.px.data() + (size_t)y * f.region.w;
-                const size_t ligne = (size_t)(y / cell) * (size_t)cols;
+                const size_t ligne = (size_t)(y / celly) * (size_t)cols;
                 for (int x = 0; x < f.region.w; ++x) {
                     const int dr = std::abs((int)((p[x] >> 16) & 0xFF) - fr);
                     const int dg = std::abs((int)((p[x] >> 8) & 0xFF) - fg);
                     const int db = std::abs((int)(p[x] & 0xFF) - fb);
-                    if (dr > 16 || dg > 16 || db > 16) ++encre[ligne + (size_t)(x / cell)];
+                    if (dr > 16 || dg > 16 || db > 16) ++encre[ligne + (size_t)(x / cellx)];
                 }
             }
             for (int cy = 0; cy < rows; ++cy)
                 for (int cx = 0; cx < cols; ++cx) {
                     const double d = (double)encre[(size_t)cy * (size_t)cols + (size_t)cx] /
-                                     (double)(cell * cell);
+                                     (double)(cellx * celly);
                     gr[(size_t)cy][(size_t)cx] = d >= 0.55 ? '#' : d >= 0.30 ? '*'
                                                 : d >= 0.12 ? ':' : d > 0.02 ? '.' : ' ';
                 }
@@ -300,8 +305,8 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
             } else {
                 interieurs.push_back(r);
             }
-            int x0 = (r.x - f.region.x) / cell, y0 = (r.y - f.region.y) / cell;
-            int x1 = (r.x + r.w - f.region.x) / cell, y1 = (r.y + r.h - f.region.y) / cell;
+            int x0 = (r.x - f.region.x) / cellx, y0 = (r.y - f.region.y) / celly;
+            int x1 = (r.x + r.w - f.region.x) / cellx, y1 = (r.y + r.h - f.region.y) / celly;
             x0 = std::max(0, std::min(x0, cols - 1)); x1 = std::max(0, std::min(x1, cols - 1));
             y0 = std::max(0, std::min(y0, rows - 1)); y1 = std::max(0, std::min(y1, rows - 1));
             char id[12];
@@ -355,8 +360,9 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 for (size_t k = 0; k < lab.size(); ++k) gr[(size_t)y0 + 1][(size_t)x0 + 1 + k] = lab[k];
             }
         }
-        std::printf("\nplan         %dx%d cases de %d px, %zu zones dont %zu formes non "
-                    "rectangulaires\n", cols, rows, cell, elements.size(), formes);
+        std::printf("\nplan         %dx%d cases de %dx%d px (1 caractere = 1 case), %zu zones dont "
+                    "%zu formes non rectangulaires\n", cols, rows, cellx, celly, elements.size(),
+                    formes);
         std::printf("encre        ' ' rien  '.' trait  ':' clairseme  '*' dense  '#' plein\n");
         for (const auto& l : gr) std::printf("|%s|\n", l.c_str());
     }

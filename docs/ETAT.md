@@ -74,21 +74,21 @@ Mesure, page temoin (geometrie connue, rendue par Firefox, 1880x1040) :
     bande d'outils       la barre d'un navigateur est bien une boite fermee : elle est
                          comptee comme cadre. C'est exact, ca encombre.
 
-## Le pas du plan
+## L'echelle du plan
 
-`--ascii [pas]` : la taille d'une case en pixels. Jetons MESURES au tokenizer (o200k_base),
-page dense (about:preferences, 1880x1040) — et non estimes.
+Un caractere de terminal est DEUX fois plus haut que large. Avec des cases carrees en pixels
+(10x10), la page sortait etiree en hauteur : le rond de 122x122 px de la page temoin
+ressortait en oeuf. Une case doit valoir UN caractere a l'ecran, donc 10 px de large et 20 px
+de haut. Le plan garde alors exactement les proportions de l'ecran (188/52 = 3,6 en
+caracteres, soit 1,8 une fois la hauteur de caractere corrigee = 1880/1040).
 
-    pas 10   188x104   20 378 car   1 562 jetons
-    pas  5   376x208   79 346 car   4 234 jetons
-    pas  4   470x260  123 494 car   5 709 jetons
-    pas  2   940x520  490 874 car  17 511 jetons
-    pas  1  1880x1040 1 958 834 car 42 913 jetons   <- 1 caractere = 1 pixel
+    --ascii       188 x 52    cases de 10x20 px   1 034 jetons (page dense)
+    --ascii 5     376 x 104   cases de  5x10 px   4 000 jetons
+    --ascii 1    1880 x 104   cases de  1x2  px   ~40 000 jetons (un caractere par pixel)
 
-Lecon : une grille ASCII est surtout faite d'ESPACES, et un jeton encode des suites
-d'espaces (jusqu'a 30-70 caracteres par jeton ici). Compter « octets / 4 » surestime le cout
-d'un facteur 12. Un caractere par pixel reste donc payable (43 k jetons), pas impossible —
-mais il ne faut pas le payer a chaque tour d'une boucle d'agent.
+Jetons MESURES au tokenizer (o200k_base), pas estimes : une grille ASCII est surtout faite
+d'ESPACES et un jeton encode des suites d'espaces (30 a 77 caracteres par jeton ici).
+Compter « octets / 4 » surestime le cout d'un facteur 12 — erreur payee, corrigee ici.
 
 ## Le diagnostic qui compte
 
