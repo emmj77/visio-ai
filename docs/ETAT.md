@@ -15,7 +15,8 @@ C++20, 3 600 lignes, binaire de 171 Ko, X11 + FreeType, **aucun modele, aucun GP
 
     capture              XShmGetImage : 5 ms plein ecran (3600x1080), 0,16 ms pour 400x300
     segmentation         zones par couleur : 0,01-0,03 ms par fenetre
-    plan ASCII           cadres imbriques (genre + identifiant), 94x52 cases pour une fenetre
+    boites fermees       test topologique sur l'encre : 12-14 ms pour 1880x1040
+    plan ASCII           deux couches : encre (forme reelle) + structure (cadres, ids)
     cibles texte         un mot = une cible, 75 a 470 par fenetre, avec identifiant stable
     cibles non textuelles blocs compacts 34x40 (icones, cases), 5-8 ms
     clic                 XTest, prouve en headless (docs/GESTE-HEADLESS.md)
@@ -23,15 +24,54 @@ C++20, 3 600 lignes, binaire de 171 Ko, X11 + FreeType, **aucun modele, aucun GP
     delta                une fenetre inchangee : 0 nouveau, 0 modifie
     cache d'etiquettes   1 177 ms froid -> 13 ms chaud (identifiant porte l'empreinte pixels)
 
+## Les boites fermees (M6-1, M6-2)
+
+Le plan ASCII ne montrait aucun bouton. La cause n'etait pas la lecture : une bordure de
+1 px occupe 9 % de son aire, donc `regions_uniformes` (remplissage >= 0,55) la jetait. Le
+cadre existait dans les pixels et n'entrait dans aucune lecture.
+
+`boites_fermees()` (src/perceive/regions.cpp) : on lit l'ENCRE — tout pixel qui s'ecarte du
+fond —, on noie l'exterieur depuis le bord de la boite de la composante, et ce que l'eau ne
+touche pas est un INTERIEUR. Le test est topologique, pas geometrique : un rond et un
+triangle passent comme un cadre ; un trait, une croix, une lettre echouent.
+
+Trois choses apprises en le mesurant, chacune avec sa mesure :
+
+- **l'encre, pas la couleur.** Un arc de coin arrondi est antialiase : chaque pixel d'arc a
+  sa propre couleur et une lecture par couleur coupe le cadre en quatre morceaux. Page
+  temoin, bordure 1 px + `border-radius: 8px` : 0 boite par couleur, 1 par encre.
+- **la reunion des segments etait fausse.** L'ancienne boucle a deux pointeurs jetait un
+  segment des que son x etait plus a gauche ; des qu'on tolere le contact diagonal (ce
+  qu'exige un arc), elle perd des paires. Reecrite en fenetre a avance monotone. La
+  connectivite a 8 est reservee a cette passe : `regions_uniformes` est inchangee.
+- **le fond passe le test de fermeture.** Il entoure les boites, donc il a de l'encre
+  partout. Il est ecarte par sa taille (sa boite couvre la frame), pas par sa forme.
+
+Mesure, page temoin (geometrie connue, rendue par Firefox, 1880x1040) :
+
+    1 px coins carres 240x120      trouve        1 px coins arrondis 240x120   trouve
+    2 px 240x80                    trouve        champ 240x32                 trouve
+    2 imbriquees 240x120 / 100x60  trouve        rond 122x122                 trouve
+                                                  triangle 164x122             trouve
+    diagonale, croix, trait, texte, lettre « o »  rejetes
+    case a cocher 16x16            hors seuil d'aire (256 px < 600)
+    terminal (texte seul)          0 cadre
+
 ## Ce qui ne marche pas
 
     lecture des lettres  18/19 sur temoins a 16 px (rendus a positions ENTIERES, donc plus
                          faciles que la realite), 2/19 a 11 px, et du charabia sur l'ecran
-    pages web            zero ligne detectee : une page n'a pas de lignes vides, tout
+    pages web            zero ligne detectee sur une page sans lignes vides, tout
                          fusionne en une bande que `hauteur_max` rejette
     icones               banque du systeme : 74 % top-1 sur 856 icones connues, 0 % sur une
                          vignette (aucune banque ne contient une vignette)
     distinction          ni case a cocher, ni curseur, ni bouton : tout est « zone sans texte »
+    boite trop plate     un bouton de 32 px de haut ne fait pas 2 cases de plan : il n'a pas
+                         de cadre dessine (son encre le montre, son id n'apparait pas)
+    bouton a fond teinte un bouton dont le fond differe du fond de page est une REGION pleine,
+                         pas un cadre (il est dans le plan, mais comme aplat)
+    bande d'outils       la barre d'un navigateur est bien une boite fermee : elle est
+                         comptee comme cadre. C'est exact, ca encombre.
 
 ## Le diagnostic qui compte
 
@@ -45,12 +85,13 @@ decoupes differentes, donc deux formes non comparables.** C'est ce qui produit �
 
 ## Par quoi continuer, dans cet ordre
 
-1. **Detecteur de boites fermees.** Chaque bouton est un PANNEAU. Le plan ASCII doit montrer
-   toutes les boites fermees, de la plus grande a la plus petite. Changer `regions_uniformes`
-   ou ajouter un detecteur dedie (suivre une bordure continue et verifier qu'elle se referme).
+1. ~~**Detecteur de boites fermees**~~ — fait (M6-1, M6-2). Voir plus haut. Restes : la case
+   a cocher 16x16 (sous le seuil d'aire ; a traiter avec les lignes de texte pour ne pas
+   confondre une lettre fermee et une case), et le bouton de 32 px de haut qui ne fait pas
+   deux cases de plan (il faudrait un marqueur d'une ligne, pas un cadre).
 
 2. **Lecture par avances + programmation dynamique.** Sonde deja ecrite :
-   `~/.hermes/cache/scratch/probe_avances.cpp`. On avance avec le pas de la police et on
+   `tools/probe_avances.cpp` (entre dans le depot). On avance avec le pas de la police et on
    compare dans la case `[x, x+avance(c))`. La version gloutonne derive (0/16, 1/16, 8/16)
    mais lit exactement « Krita 42 » en fin de ligne : le mecanisme est bon, la recherche ne
    l'est pas. Remplacer le choix glouton par une DP sur les positions, cout normalise par
@@ -63,7 +104,9 @@ decoupes differentes, donc deux formes non comparables.** C'est ce qui produit �
 
 ## Commandes
 
-    ./build/visio --win Firefox --ascii        le plan de la page
+    ./build/visio --win Firefox --ascii        le plan : encre + structure
+    ./build/visio --win Firefox --boites       les formes fermees (cadres, ronds, triangles)
+    ./build/visio --win Firefox --boites 14,600   idem, avec cote_min,aire_min
     ./build/visio --win Firefox --cibles       les cibles texte (id, rect, etiquette)
     ./build/visio --win Firefox --formes       les cibles sans texte
     ./build/visio --win Firefox --delta        seulement ce qui a change
@@ -71,4 +114,4 @@ decoupes differentes, donc deux formes non comparables.** C'est ce qui produit �
     ./build/visio --taper "bonjour"            frappe au clavier, sans rien lire
     ./build/visio --win Firefox --dump "x,y,w,h /tmp/z.ppm"   les pixels d'une zone
 
-    ctest --test-dir build                     9 cibles, 16 assertions sur les temoins
+    ctest --test-dir build                     9 cibles, 296 assertions unitaires

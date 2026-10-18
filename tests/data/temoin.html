@@ -1,0 +1,57 @@
+<!doctype html>
+<!-- Page temoin pour le detecteur de boites fermees. Geometrie CONNUE : chaque boite a une
+     position et une taille fixes, sans dependance a la police. Le but n'est pas d'etre jolie
+     mais de confronter le detecteur a des cas reels : trait de 1 px, coins arrondis, trait de
+     2 px, champ, case a cocher, et trois pieges (un trait isole, un texte, une croix). -->
+<html lang="fr">
+<head><meta charset="utf-8"><title>Boites temoin</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #ffffff; font: 14px sans-serif; color: #222; }
+  .b { position: absolute; box-sizing: border-box; }
+  /* 1 : trait de 1 px, coins carres */
+  #b1 { left: 40px;  top: 40px;  width: 240px; height: 120px; border: 1px solid #808080; }
+  /* 2 : trait de 1 px, coins arrondis 8 px */
+  #b2 { left: 320px; top: 40px;  width: 240px; height: 120px; border: 1px solid #808080; border-radius: 8px; }
+  /* 3 : trait de 2 px */
+  #b3 { left: 40px;  top: 200px; width: 240px; height: 80px;  border: 2px solid #404040; }
+  /* 4 : champ de saisie (1 px, fond legerement teinte) */
+  #b4 { left: 320px; top: 200px; width: 240px; height: 32px;  border: 1px solid #b0b0b0;
+        background: #f7f7f7; }
+  /* 5 : bouton (bord 1 px + fond gris clair) */
+  #b5 { left: 40px;  top: 320px; width: 120px; height: 32px;  border: 1px solid #a0a0a0;
+        background: #efefef; text-align: center; line-height: 32px; }
+  /* 6 : case a cocher 16x16 */
+  #b6 { left: 200px; top: 328px; width: 16px;  height: 16px; border: 1px solid #909090; }
+  /* 7 : deux boites imbriquees */
+  #b7 { left: 320px; top: 260px; width: 240px; height: 120px; border: 1px solid #707070; }
+  #b8 { left: 340px; top: 280px; width: 100px; height: 60px;  border: 1px solid #707070; }
+  /* un trait isole : ce n'est pas une boite */
+  #trait { position: absolute; left: 40px; top: 400px; width: 520px; height: 1px; background: #c0c0c0; }
+  /* une croix : elle touche les quatre bords de sa boite, elle ne se referme pas */
+  #croix { position: absolute; left: 40px; top: 430px; width: 200px; height: 100px; }
+  #croix i { position: absolute; background: #505050; }
+  #croix .h { left: 0; top: 49px; width: 200px; height: 2px; }
+  #croix .v { left: 99px; top: 0; width: 2px; height: 100px; }
+  /* un texte : des lettres fermees (o, e, a) mais aucune boite */
+  #texte { position: absolute; left: 320px; top: 430px; width: 400px; font: 20px sans-serif; }
+  /* formes non rectangulaires, en vectoriel (donc antialiasees comme du vrai) */
+  #formes { position: absolute; left: 40px; top: 550px; }
+</style></head>
+<body>
+  <div class="b" id="b1"></div>
+  <div class="b" id="b2"></div>
+  <div class="b" id="b3"></div>
+  <div class="b" id="b4"></div>
+  <div class="b" id="b5">Valider</div>
+  <div class="b" id="b6"></div>
+  <div class="b" id="b7"></div>
+  <div class="b" id="b8"></div>
+  <div id="trait"></div>
+  <div id="croix"><i class="h"></i><i class="v"></i></div>
+  <div id="texte">booeba</div>
+  <svg id="formes" width="560" height="160" viewBox="0 0 560 160">
+    <circle cx="80" cy="80" r="60" fill="none" stroke="#2050a0" stroke-width="1.5"/>
+    <polygon points="280,20 200,140 360,140" fill="none" stroke="#306030" stroke-width="1.5"/>
+    <line x1="400" y1="140" x2="540" y2="20" stroke="#806020" stroke-width="1.5"/>
+  </svg>
+</body></html>
