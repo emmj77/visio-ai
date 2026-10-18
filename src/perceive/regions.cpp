@@ -199,7 +199,8 @@ std::vector<Region> regions_uniformes(const Frame& f, int quant, int64_t aire_mi
 }
 
 std::vector<Region> boites_fermees(const Frame& f, int seuil_encre, int cote_min,
-                                   int64_t aire_min, double remplissage_max, uint32_t fond) {
+                                   int64_t aire_min, double remplissage_max, uint32_t fond,
+                                   double bord_min_petit) {
     std::vector<Region> out;
     if (f.vide()) return out;
     if (fond == 0) fond = couleur_fond(f, 3);
@@ -300,11 +301,17 @@ std::vector<Region> boites_fermees(const Frame& f, int seuil_encre, int cote_min
             }
         }
 
-        fermee[c] = 1;
         const Rect rect{f.region.x + b.x0, f.region.y + b.y0, w, h};
+        // Une PETITE forme fermee (case a cocher, pastille, curseur) ne se distingue d'une
+        // LETTRE fermee que par la geometrie de son encre : une case est un cadre dont
+        // l'encre est TOUTE sur son bord, une lettre (« o », « e ») est un anneau courbe qui
+        // ne touche son bord qu'en quatre points.
+        const double part_bord = b.n > 0 ? (double)sur_bord / (double)b.n : 0.0;
+        if (rect.area() < 600 && part_bord < bord_min_petit) continue;
+        fermee[c] = 1;
         Region rg{rect, 0, b.n, (double)b.n / (double)rect.area()};
         rg.cadre = true;
-        rg.sur_bord = b.n > 0 ? (double)sur_bord / (double)b.n : 0.0;
+        rg.sur_bord = part_bord;
         out.push_back(rg);
     }
     if (out.empty()) return out;

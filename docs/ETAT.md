@@ -66,12 +66,26 @@ Mesure, page temoin (geometrie connue, rendue par Firefox, 1880x1040) :
     icones               banque du systeme : 74 % top-1 sur 856 icones connues, 0 % sur une
                          vignette (aucune banque ne contient une vignette)
     distinction          ni case a cocher, ni curseur, ni bouton : tout est « zone sans texte »
-    boite trop plate     un bouton de 32 px de haut ne fait pas 2 cases de plan : il n'a pas
-                         de cadre dessine (son encre le montre, son id n'apparait pas)
+    boite trop plate     resolu : un bouton de 32 px de haut ne fait pas 2 cases de plan, il
+                         recoit une ligne de « = » et son nom (marqueur, pas cadre)
     bouton a fond teinte un bouton dont le fond differe du fond de page est une REGION pleine,
                          pas un cadre (il est dans le plan, mais comme aplat)
     bande d'outils       la barre d'un navigateur est bien une boite fermee : elle est
                          comptee comme cadre. C'est exact, ca encombre.
+
+## Le pas du plan
+
+`--ascii [pas]` : la taille d'une case en pixels. Mesure sur une fenetre 1880x1040.
+
+    pas 20    94x52 cases     8 146 octets   ~2 000 jetons   un bouton 240x120 fait 12x6
+    pas 10   188x104 cases   22 969 octets   ~6 000 jetons   defaut : 1 caractere = 10 px
+    pas  5   376x208 cases   81 935 octets  ~20 000 jetons
+    pas  2   940x520 cases  493 464 octets ~125 000 jetons
+    pas  1  1880x1040       1 961 426 octets ~500 000 jetons  impossible (fenetre de contexte)
+
+Un caractere par pixel n'est donc PAS gratuit : c'est 500 000 jetons pour une seule capture.
+10 px par case est le plus fin qui reste negligeable, et il suffit a voir un rond, un
+triangle et une diagonale a main levee.
 
 ## Le diagnostic qui compte
 
@@ -104,9 +118,10 @@ decoupes differentes, donc deux formes non comparables.** C'est ce qui produit �
 
 ## Commandes
 
-    ./build/visio --win Firefox --ascii        le plan : encre + structure
-    ./build/visio --win Firefox --boites       les formes fermees (cadres, ronds, triangles)
-    ./build/visio --win Firefox --boites 14,600   idem, avec cote_min,aire_min
+    ./build/visio --win Firefox --ascii            le plan : encre + structure, 1 car = 10 px
+    ./build/visio --win Firefox --ascii 20         idem, plus grossier (4x moins de jetons)
+    ./build/visio --win Firefox --boites           les formes fermees (cadres, ronds, cases)
+    ./build/visio --win Firefox --boites 14,600    idem, avec cote_min,aire_min
     ./build/visio --win Firefox --cibles       les cibles texte (id, rect, etiquette)
     ./build/visio --win Firefox --formes       les cibles sans texte
     ./build/visio --win Firefox --delta        seulement ce qui a change

@@ -40,8 +40,9 @@ bool g_formes = false;     // --formes : les cibles NON textuelles (icones, case
 std::string g_dump;        // --dump "x,y,w,h fichier.ppm" : sortir les pixels d'une zone
 bool g_ascii = false;      // --ascii : un schema ASCII de la page, pour l'agent
 bool g_boites = false;     // --boites : les cadres fermes (boutons, cartes, panneaux)
-int  g_cote_min = 14;      // plus petit cote d'un cadre accepte
-int  g_aire_min = 600;     // aire minimale de la boite (pas du trait)
+int  g_cote_min = 10;      // plus petit cote d'un cadre accepte
+int  g_pas = 10;           // taille d'une case du plan ASCII, en pixels (1 caractere = 10 px)
+int  g_aire_min = 150;     // aire minimale de la boite (pas du trait) : 150 px = une case 16x16
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -82,9 +83,9 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     std::printf("boites       %zu cadres fermes en %.2f ms\n", boites.size(), t_boites);
     if (g_boites) {
         for (const auto& b : boites)
-            std::printf("  boite  %4dx%-4d @ %4d,%-4d  trait #%06x  remplissage %.2f  %6ld px\n",
+            std::printf("  boite %4dx%-4d @ %4d,%-4d trait #%06x remplissage %.2f bord %.2f %6ld px\n",
                         b.rect.w, b.rect.h, b.rect.x, b.rect.y, b.couleur & 0xFFFFFF,
-                        b.remplissage, (long)b.pixels);
+                        b.remplissage, b.sur_bord, (long)b.pixels);
     }
 
     const size_t max = regions.size() < 20 ? regions.size() : 20;
@@ -210,7 +211,7 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     // rectangulaire ne le dit pas). Puis la STRUCTURE : les zones du catalogue avec leur
     // cadre et leur nom, la plus grande d'abord, les plus petites par-dessus.
     if (g_ascii) {
-        const int cell = 20;
+        const int cell = g_pas;
         const int cols = std::max(1, f.region.w / cell), rows = std::max(1, f.region.h / cell);
         std::vector<std::string> gr((size_t)rows, std::string((size_t)cols, ' '));
         auto nom = [](visio::Genre x) -> const char* {
@@ -297,7 +298,19 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 }
                 continue;
             }
-            if (x1 - x0 < 3 || y1 - y0 < 2) continue;
+            // Un bouton de 32 px de haut ne fait pas deux cases de plan : pas de cadre
+            // possible. On lui donne une ligne d'encre rehaussee et son nom, sinon la zone
+            // est visible dans les pixels mais son identifiant n'apparait nulle part et
+            // l'agent ne peut pas la nommer.
+            if (x1 - x0 < 3 || y1 - y0 < 2) {
+                const int y = (y0 + y1) / 2;
+                for (int x = x0; x <= x1; ++x) gr[(size_t)y][(size_t)x] = '=';
+                const std::string lab = std::string(" ") + nom(e->genre) + " " + id;
+                const int depart = x1 + 1;
+                if (depart + (int)lab.size() < cols)
+                    for (size_t k = 0; k < lab.size(); ++k) gr[(size_t)y][(size_t)depart + k] = lab[k];
+                continue;
+            }
             // Les traits du cadre sont STRUCTURELS : ils passent sur l'encre (sinon un
             // point d'encre coupe la bordure et le plan devient illisible).
             for (int x = x0; x <= x1; ++x) {
@@ -563,7 +576,20 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--delta") == 0) { g_delta = true; g_cibles = true; g_lire = true; }
         if (std::strcmp(argv[i], "--formes") == 0) { g_formes = true; g_lire = true; }
         if (std::strcmp(argv[i], "--dump") == 0 && i + 1 < argc) g_dump = argv[++i];
-        if (std::strcmp(argv[i], "--ascii") == 0) g_ascii = true;
+        if (std::strcmp(argv[i], "--ascii") == 0) {
+            g_ascii = true;
+            // --ascii [pas] : la taille d'une case en pixels. Le plan est a l'echelle des
+            // pixels : une case de 20 px donne 94x52 caracteres, une case de 10 px en donne
+            // 188x104 (deux fois plus fin, quatre fois plus de caracteres). Le cout se paie
+            // en jetons de contexte, pas en temps de calcul : a mesurer avant de choisir.
+            if (i + 1 < argc) {
+                int p = 0;
+                if (std::sscanf(argv[i + 1], "%d", &p) == 1 && p >= 1 && p <= 40) {
+                    g_pas = p;
+                    ++i;
+                }
+            }
+        }
         if (std::strcmp(argv[i], "--boites") == 0) {
             g_boites = true;
             // --boites [cote_min,aire_min] : les seuils, pour mesurer au lieu de deviner.

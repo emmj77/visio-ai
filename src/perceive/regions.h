@@ -45,9 +45,14 @@ std::vector<Region> regions_uniformes(const Frame& f, int quant = 5,
 //   aire_min        : aire de la boîte (pas du trait)
 //   remplissage_max : au-delà, c'est une région pleine, déjà vue par `regions_uniformes`
 //   fond            : 0 = couleur dominante de la frame, calculée ici
+//   bord_min_petit  : pour une petite forme (aire < 600 px), part minimale d'encre sur son
+//                     bord. Une case à cocher est un cadre (1,0) ; une lettre fermée « o »
+//                     est un anneau courbe (0,45). 0 = pas de filtre : une pastille RONDE
+//                     de 14 px redevient une forme, exactement comme la lettre « o » — la
+//                     géométrie ne les sépare pas, seul le contexte le ferait.
 // `couleur` est celle du trait, `pixels` celui du trait. Trié par aire décroissante.
-std::vector<Region> boites_fermees(const Frame& f, int seuil_encre = 8, int cote_min = 14,
-                                   int64_t aire_min = 600, double remplissage_max = 0.65,
-                                   uint32_t fond = 0);
+std::vector<Region> boites_fermees(const Frame& f, int seuil_encre = 8, int cote_min = 10,
+                                   int64_t aire_min = 150, double remplissage_max = 0.65,
+                                   uint32_t fond = 0, double bord_min_petit = 0.80);
 
 } // namespace visio

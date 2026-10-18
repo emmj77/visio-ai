@@ -153,14 +153,37 @@ int main() {
         if (cadres.size() == 1) CHECK((cadres[0].rect == Rect{10, 10, 280, 180}));
     }
 
-    // une LETTRE fermee (taille de texte courant) n'est pas une boite
+    // une LETTRE fermee : un anneau COURBE, comme le « o ». Ce n'est pas un cadre.
     {
         Frame p = Frame::pour(Rect{0, 0, 100, 60});
         p.remplir(0xFFFFFFFFu);
-        for (int x = 10; x < 25; ++x) { p.set(x, 10, 0xFF000000u); p.set(x, 27, 0xFF000000u); }
-        for (int y = 10; y < 28; ++y) { p.set(10, y, 0xFF000000u); p.set(24, y, 0xFF000000u); }
-        CHECK(boites_fermees(p).empty());            // 15x18 : sous les seuils
-        CHECK(boites_fermees(p, 8, 8, 100, 0.65).size() == 1);   // et si on les baisse, elle sort
+        const double cx = 17.0, cy = 19.0, rx = 7.0, ry = 9.0;
+        for (int y = 0; y < 60; ++y)
+            for (int x = 0; x < 100; ++x) {
+                const double dx = (x - cx) / rx, dy = (y - cy) / ry;
+                const double d = dx * dx + dy * dy;
+                if (d > 0.62 && d <= 1.0) p.set(x, y, 0xFF000000u);
+            }
+        // la lettre « o » : 15x18, donc AU-DESSUS des seuils par defaut (10,150), mais son
+        // encre est un anneau courbe — sur_bord bas — et elle doit rester dehors
+        CHECK(boites_fermees(p).empty());
+        // sans le filtre des petites formes, c'est bien une forme FERMEE : le test
+        // topologique la voit, c'est le filtre anti-texte qui la renvoie
+        CHECK(boites_fermees(p, 8, 8, 100, 0.65, 0, 0.0).size() == 1);
+    }
+
+    // une CASE A COCHER 16x16 : meme taille qu'une lettre, mais son encre est sur son bord
+    {
+        Frame p = Frame::pour(Rect{0, 0, 120, 90});
+        p.remplir(0xFFFFFFFFu);
+        for (int x = 40; x < 56; ++x) { p.set(x, 40, 0xFF909090u); p.set(x, 55, 0xFF909090u); }
+        for (int y = 40; y < 56; ++y) { p.set(40, y, 0xFF909090u); p.set(55, y, 0xFF909090u); }
+        auto b = boites_fermees(p);                  // seuils par defaut : 10 px, 150 px
+        CHECK(b.size() == 1);
+        if (b.size() == 1) {
+            CHECK((b[0].rect == Rect{40, 40, 16, 16}));
+            CHECK(b[0].sur_bord > 0.95);             // le trait est tout sur le bord
+        }
     }
 
     // un ROND : ce n'est pas un rectangle, le test est topologique et doit le voir
