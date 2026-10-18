@@ -14,6 +14,7 @@
 #include "perceive/windows.h"
 
 #include <X11/Xlib.h>
+#include <X11/extensions/XTest.h>
 
 #include <chrono>
 #include <cstdio>
@@ -26,6 +27,7 @@ namespace {
 bool g_lire = false;       // --lire : reconnaître les caractères par leur forme
 bool g_etiquettes = false; // --etiquettes : nommer chaque élément par son texte
 bool g_cibles = false;     // --cibles : les cibles cliquables, un mot = une cible
+std::string g_clic;        // --clic <texte> : cliquer la cible dont l'etiquette contient ce texte
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -135,6 +137,7 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     // son etiquette. C'est ce que l'agent recoit : il choisit un id, il ne voit pas de pixels.
     if (g_cibles) {
         const auto t5 = std::chrono::steady_clock::now();
+        bool deja_clique = false;
         visio::Lecteur lecteur;
         size_t total = 0;
         std::printf("\ncibles       (un mot = une cible, lecture mot par mot)\n");
@@ -166,6 +169,19 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                     std::printf("  %016lx  cliquer  %4dx%-3d @%5d,%-4d  « %s »\n", id, r.w, r.h,
                                 r.x, r.y, txt.c_str());
                     ++total;
+
+                    // --clic : le geste lui-meme. On vise le CENTRE de la cible, on
+                    // deplace, on appuie, on relache. Rien d'autre n'est n
+                    if (!g_clic.empty() && !deja_clique && txt.find(g_clic) != std::string::npos) {
+                        const int cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+                        XTestFakeMotionEvent(d, -1, cx, cy, CurrentTime);
+                        XTestFakeButtonEvent(d, 1, True, CurrentTime);
+                        XTestFakeButtonEvent(d, 1, False, CurrentTime);
+                        XFlush(d);
+                        std::printf("clic         sur « %s » au centre %d,%d (id %016lx)\n",
+                                    txt.c_str(), cx, cy, id);
+                        deja_clique = true;
+                    }
                 }
                 debut = k;
             }
@@ -219,6 +235,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--lire") == 0) g_lire = true;
         if (std::strcmp(argv[i], "--etiquettes") == 0) { g_etiquettes = true; g_lire = true; }
         if (std::strcmp(argv[i], "--cibles") == 0) { g_cibles = true; g_lire = true; }
+        if (std::strcmp(argv[i], "--clic") == 0 && i + 1 < argc) { g_clic = argv[++i]; g_cibles = true; g_lire = true; }
     }
 
     Display* d = XOpenDisplay(nullptr);

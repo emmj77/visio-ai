@@ -36,6 +36,8 @@ target_include_directories(visio_core PUBLIC src)
 target_link_libraries(visio_core PUBLIC
   PkgConfig::FREETYPE
   PkgConfig::X11 PkgConfig::XEXT PkgConfig::XDAMAGE PkgConfig::XFIXES ${CMAKE_DL_LIBS})
+find_library(XTST_LIB Xtst REQUIRED)
+target_link_libraries(visio_core PUBLIC ${XTST_LIB})
 
 # --- binaire principal --------------------------------------------------
 add_executable(visio src/main.cpp)
