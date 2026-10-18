@@ -13,13 +13,13 @@ documents (SLM tool-use only, API visuelle, dessin ASCII et Krita, plan d'archit
 | M0 | socle, sonde d'écran, banc de capture | fait |
 | M1 | DAMAGE par fenêtre, fusion de rectangles | fait |
 | M2 | diff par tuiles, liste des fenêtres clientes | fait |
-| M3 | nommer : segmentation par couleur, catalogue | en cours |
+| M3 | nommer : segmentation par couleur, catalogue d'éléments | en cours |
 | M4 | agir : XTest, XI2, gestes | à faire |
 | M5 | protocole socket Unix NDJSON | à faire |
 | M6 | gestes utiles de bout en bout | à faire |
 
-6 tests, tous verts : `unit_rect`, `unit_merge`, `unit_tile_diff`, `unit_regions`,
-`integration_damage`, `integration_windows`.
+7 tests, tous verts : `unit_rect`, `unit_merge`, `unit_tile_diff`, `unit_regions`,
+`unit_catalog`, `integration_damage`, `integration_windows`.
 
 ## Compiler
 
@@ -50,6 +50,20 @@ capture      9.98 ms   segmentation 8.91 ms   95 regions retenues
    1  1104x830  @ 1819,115   couleur #fbfafa  remplissage 0.76  697497 px
 ```
 
+Le mode `--win` va plus loin : il construit le **catalogue** — la liste nommée de ce qui
+est cliquable, avec un identifiant stable.
+
+```
+catalogue    13 elements en 0.01 ms (3 glyphes ecartes)
+  d666072b63e6d18a fenetre   800x882  @ 2149,92   #000000
+  4bb02ddcb05cf512 panneau   350x421  @ 1793,92   #24485c
+  aba129a85f3d7847 champ      38x46   @ 1793,213  #3178ca
+```
+
+Deux filtres, appris en exécution : un filet de 1 à 4 px est un séparateur, pas une
+cible ; une région de 7x11 est une lettre — sur un terminal, sans filtre, 53 éléments
+dont 40 lettres. Et le fond de fenêtre n'est pas répété en panneau.
+
 ## Bancs
 
 ```sh
@@ -70,6 +84,7 @@ capture      9.98 ms   segmentation 8.91 ms   95 regions retenues
 | DAMAGE par fenêtre | rectangles exacts (3 420 px) | `bench_damage` |
 | DAMAGE racine sans compositeur (Xvfb) | 54 180 px par rectangle | `bench_damage` |
 | segmentation par couleur, 1 Mpx | 8,9 à 12,0 ms | `visio --win` |
+| catalogue (50 éléments) | 0,01 à 0,03 ms | `visio --win` |
 | tesseract, bandeau 400x25 | 5,56 ms (contre 95-155 ms en CLI) | `bench_ocr` |
 
 Deux conséquences inscrites dans le code :

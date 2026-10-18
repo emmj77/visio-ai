@@ -7,6 +7,7 @@
 #include "capture/shm_capture.h"
 #include "common/log.h"
 #include "core/frame.h"
+#include "perceive/catalog.h"
 #include "perceive/regions.h"
 #include "perceive/windows.h"
 
@@ -20,7 +21,7 @@
 
 namespace {
 
-int mode_regions(Display* d, visio::Rect zone, const char* quoi) {
+int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
     if (!cap.valide()) { VISIO_ERROR("capture SHM indisponible"); return 2; }
 
@@ -55,6 +56,24 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi) {
                     i + 1, r.rect.w, r.rect.h, r.rect.x, r.rect.y, r.couleur & 0xFFFFFF,
                     r.remplissage, (long)r.pixels);
     }
+
+    // Le catalogue : ce que le modèle lira. Identifiants stables, genres devinés.
+    t0 = std::chrono::steady_clock::now();
+    visio::Catalogue cat;
+    const auto& elements = cat.maj(fenetre, regions);
+    const double t_cat = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - t0).count();
+    std::printf("\ncatalogue    %zu elements en %.2f ms (%zu glyphes ecartes)\n",
+                elements.size(), t_cat, cat.glyphes_ecartes);
+    const std::string texte = cat.texte();
+    size_t debut = 0, n = 0;
+    while (debut < texte.size() && n < 20) {
+        const size_t fin = texte.find('\n', debut);
+        std::printf("  %s\n", texte.substr(debut, fin - debut).c_str());
+        debut = fin + 1;
+        ++n;
+    }
+
     cap.release();
     return 0;
 }
@@ -78,7 +97,7 @@ int main(int argc, char** argv) {
         const visio::ScreenInfo si = visio::probe_screen(d);
         const visio::Rect zone = (argc >= 3) ? parse_rect(argv[2]) : si.screen;
         if (zone.empty()) { VISIO_ERROR("rectangle attendu : x,y,w,h"); XCloseDisplay(d); return 2; }
-        const int rc = mode_regions(d, zone, "demandee");
+        const int rc = mode_regions(d, zone, "demandee", DefaultRootWindow(d));
         XCloseDisplay(d);
         return rc;
     }
@@ -88,7 +107,7 @@ int main(int argc, char** argv) {
         for (const auto& w : visio::list_windows(d, true)) {
             if (w.title.find(motif) == std::string::npos) continue;
             std::printf("fenetre      %08lx  %s\n", (unsigned long)w.id, w.title.c_str());
-            const int rc = mode_regions(d, w.rect, "fenetre");
+            const int rc = mode_regions(d, w.rect, "fenetre", w.id);
             XCloseDisplay(d);
             return rc;
         }
