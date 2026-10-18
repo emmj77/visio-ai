@@ -92,6 +92,8 @@ private:
     size_t police_ = 0;
     bool   police_fixee_ = false;
     float  score_ = 1e9f;      // qualité de la dernière identification
+    int    votes_ = 0;         // mots consécutifs qui votent pour la même police
+    int    police_votee_ = -1; // la police qui récolte ces voix
 
     // Note le premier glyphe lisible trouvé et compare : renvoie l'écart moyen des
     // meilleures correspondances, 1,0 si rien ne colle.

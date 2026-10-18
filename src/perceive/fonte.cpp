@@ -525,6 +525,16 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
             identifier(glyphes, hauteur, mono, pas);
         }
     }
+    // VOTE DE POLICE. La typo d'une fenêtre ne change pas d'un mot à l'autre : quand six
+    // mots consécutifs s'accordent sur la même police avec un bon score, on la verrouille.
+    // Les mots suivants ne balaient plus que les tailles : identifier la police coûtait
+    // 40 à 60 ms par mot neuf, c'est là qu'est l'économie.
+    if (score_ <= 0.10f && police_ >= 0) {
+        if (police_ == police_votee_) ++votes_;
+        else { police_votee_ = police_; votes_ = 1; }
+        if (votes_ >= 6) police_fixee_ = true;
+    }
+
     auto it = trouvees_.find(cle);
     if (it == trouvees_.end()) return std::string(glyphes.size(), '?');
 
