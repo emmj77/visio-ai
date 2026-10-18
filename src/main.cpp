@@ -35,6 +35,7 @@ bool g_cibles = false;     // --cibles : les cibles cliquables, un mot = une cib
 std::string g_clic;        // --clic <texte> : cliquer la cible dont l'etiquette contient ce texte
 std::string g_taper;       // --taper <texte> : ecrire au clavier, caractere par caractere
 bool g_delta = false;      // --delta : ne rendre que ce qui a change depuis le dernier scan
+bool g_formes = false;     // --formes : les cibles NON textuelles (icones, cases, curseurs)
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -149,6 +150,24 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
         visio::Lecteur lecteur;
         size_t total = 0;
         std::printf("\ncibles       (un mot = une cible, lecture mot par mot)\n");
+
+        // OPTIMISATION : une cible deja vue (meme id, donc meme geometrie) a deja ete lue.
+        // Son etiquette est dans l'etat du scan precedent : on ne relit pas un pixel.
+        std::map<std::string, std::string> memo;
+        size_t evitees = 0;
+        {
+            const char* h0 = std::getenv("HOME");
+            std::ifstream in(std::string(h0 ? h0 : ".") + "/.cache/visio/" +
+                             std::to_string((int)fenetre) + ".txt");
+            std::string l3;
+            while (std::getline(in, l3)) {
+                const auto p = l3.find(' ');
+                const auto b = l3.find('|');
+                if (p == std::string::npos || b == std::string::npos) continue;
+                memo[l3.substr(0, p)] = l3.substr(b + 1);
+            }
+        }
+
         for (const auto& l : lignes) {
             const auto gs = visio::extraire_glyphes(f, l, fond);
             if (gs.empty()) continue;
@@ -165,15 +184,41 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 const visio::Rect r = visio::Rect{gs[debut].rect.x, l.rect.y,
                                                   gs[k - 1].rect.right() - gs[debut].rect.x,
                                                   l.rect.h};
-                visio::LigneTexte mot{r, 0, 1.0};
-                const std::string txt = lecteur.lire(f, mot, fond);
+                // L'identifiant se calcule AVANT de lire : geometrie + empreinte des PIXELS.
+                // Sans l'empreinte, une horloge ou un compteur garderait son ancienne
+                // etiquette (meme place, meme taille, texte different). Avec elle, un mot qui
+                // change est une cible neuve : relu une fois, puis mis en cache.
+                uint64_t sig = 1469598103934665603ull;
+                for (int yy = r.y; yy < r.y + r.h; ++yy) {
+                    const int ly = yy - f.region.y;
+                    if (ly < 0 || ly >= f.region.h) continue;
+                    const uint32_t* row = f.px.data() + (size_t)ly * f.region.w;
+                    for (int xx = r.x; xx < r.x + r.w; ++xx) {
+                        const int lx = xx - f.region.x;
+                        if (lx < 0 || lx >= f.region.w) continue;
+                        sig ^= (row[lx] & 0xFFFFFFu);
+                        sig *= 1099511628211ull;
+                    }
+                }
+                uint64_t id = 1469598103934665603ull;
+                const std::string gk = std::to_string((int)fenetre) + "|" +
+                                       std::to_string(r.x) + "," + std::to_string(r.y) + "," +
+                                       std::to_string(r.w) + "x" + std::to_string(r.h) + "|" +
+                                       std::to_string(sig);
+                for (unsigned char ch : gk) { id ^= ch; id *= 1099511628211ull; }
+                char cle[32];
+                std::snprintf(cle, sizeof cle, "%016lx", id);
+
+                std::string txt;
+                const auto mi = memo.find(cle);
+                if (mi != memo.end()) {
+                    txt = mi->second;      // deja lue : cout nul
+                    ++evitees;
+                } else {
+                    visio::LigneTexte mot{r, 0, 1.0};
+                    txt = lecteur.lire(f, mot, fond);
+                }
                 if (!txt.empty() && txt != " ") {
-                    // Identifiant stable : empreinte de la fenetre et de la geometrie.
-                    uint64_t id = 1469598103934665603ull;
-                    const std::string gk = std::to_string((int)fenetre) + "|" +
-                                           std::to_string(r.x) + "," + std::to_string(r.y) + "," +
-                                           std::to_string(r.w) + "x" + std::to_string(r.h);
-                    for (unsigned char ch : gk) { id ^= ch; id *= 1099511628211ull; }
                     vus.emplace_back(id, txt, r);
                     if (!g_delta)
                         std::printf("  %016lx  cliquer  %4dx%-3d @%5d,%-4d  « %s »\n", id, r.w,
@@ -197,7 +242,7 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
             }
         }
 
-        if (g_delta) {
+        {   // l'etat est toujours ecrit : c'est aussi le cache des etiquettes
             const char* home = std::getenv("HOME");
             const std::string base = std::string(home ? home : ".") + "/.cache/visio";
             const std::string chemin = base + "/" + std::to_string((int)fenetre) + ".txt";
@@ -222,26 +267,67 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 apres[id_hex] = etat;
                 const auto it = avant.find(id_hex);
                 if (it == avant.end()) {
-                    std::printf("  +  %s  %s\n", id_hex, etat);
+                    if (g_delta) std::printf("  +  %s  %s\n", id_hex, etat);
                     ++nouveaux;
                 } else if (it->second != etat) {
-                    std::printf("  ~  %s  %s\n", id_hex, etat);
+                    if (g_delta) std::printf("  ~  %s  %s\n", id_hex, etat);
                     ++changes;
                 }
             }
             size_t partis = 0;
             for (const auto& a : avant)
-                if (!apres.count(a.first)) { std::printf("  -  %s\n", a.first.c_str()); ++partis; }
+                if (!apres.count(a.first)) {
+                    if (g_delta) std::printf("  -  %s\n", a.first.c_str());
+                    ++partis;
+                }
             std::error_code ec;
             std::filesystem::create_directories(base, ec);
             std::ofstream out(chemin, std::ios::trunc);
             for (const auto& a : apres) out << a.first << ' ' << a.second << '\n';
-            std::printf("delta        %zu nouveaux, %zu modifies, %zu disparus (%zu cibles)\n",
-                        nouveaux, changes, partis, apres.size());
+            if (g_delta)
+                std::printf("delta        %zu nouveaux, %zu modifies, %zu disparus (%zu cibles)\n",
+                            nouveaux, changes, partis, apres.size());
         }
-        std::printf("cibles       %zu en %.1f ms\n", total,
+        std::printf("cibles       %zu dont %zu relues depuis le cache, en %.1f ms\n", total,
+                    evitees,
                     std::chrono::duration<double, std::milli>(
                         std::chrono::steady_clock::now() - t5).count());
+    }
+
+
+    // --formes : les cibles NON textuelles. Une icone, une case, un curseur ne portent pas de
+    // texte : on les trouve par leur forme (petit bloc compact, de couleur, hors des lignes
+    // de texte) et on les etiquette par leur geometrie, faute de mieux.
+    if (g_formes) {
+        const auto t6 = std::chrono::steady_clock::now();
+        // Un petit bloc est "compact" : son aire est proche de sa boite. C'est ce qui
+        // distingue une icone d'un simple trait ou d'un aplat de fond.
+        const auto petites = visio::regions_uniformes(f, 5, 40, 0.55);
+        size_t nf = 0;
+        for (const auto& rg : petites) {
+            const visio::Rect& r = rg.rect;
+            if (r.w < 8 || r.h < 8 || r.w > 160 || r.h > 160) continue;
+            // Une icone est a peu pres carree ; une bande de couleur ne l'est pas. C'est ce
+            // qui separe un bouton d'icone d'un simple aplat de fond.
+            const double ratio = (double)r.w / (double)r.h;
+            if (ratio < 0.5 || ratio > 2.0) continue;
+            if (r.w * r.h > 4096) continue;
+            bool sur_texte = false;
+            for (const auto& l : lignes)
+                if (!visio::intersect(r, l.rect).empty()) { sur_texte = true; break; }
+            if (sur_texte) continue;
+            uint64_t id = 1469598103934665603ull;
+            const std::string gk = "f|" + std::to_string((int)fenetre) + "|" + std::to_string(r.x) +
+                                   "," + std::to_string(r.y) + "," + std::to_string(r.w) + "x" +
+                                   std::to_string(r.h);
+            for (unsigned char ch : gk) { id ^= ch; id *= 1099511628211ull; }
+            std::printf("  %016lx  forme    %4dx%-3d @%5d,%-4d  « zone sans texte »\n", id, r.w,
+                        r.h, r.x, r.y);
+            ++nf;
+        }
+        std::printf("formes       %zu cibles non textuelles en %.1f ms\n", nf,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t6).count());
     }
 
     if (g_lire && !lignes.empty()) {
@@ -291,6 +377,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--clic") == 0 && i + 1 < argc) { g_clic = argv[++i]; g_cibles = true; g_lire = true; }
         if (std::strcmp(argv[i], "--taper") == 0 && i + 1 < argc) g_taper = argv[++i];
         if (std::strcmp(argv[i], "--delta") == 0) { g_delta = true; g_cibles = true; g_lire = true; }
+        if (std::strcmp(argv[i], "--formes") == 0) { g_formes = true; g_lire = true; }
     }
 
     Display* d = XOpenDisplay(nullptr);
