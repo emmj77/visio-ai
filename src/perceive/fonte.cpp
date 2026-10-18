@@ -157,24 +157,30 @@ Lecteur::Lecteur() : polices_(polices_candidates()) {}
 // prise à un seuil, celle de FreeType à un autre. On essaie donc les neuf décalages et
 // on garde le meilleur, au lieu de refuser la comparaison.
 float ecart_avec_decalage(const Glyphe& a, const Glyphe& b) {
-    if (a.w == b.w && a.h == b.h) return ecart_glyphes(a, b);
+    // TAUX DE RECOUVREMENT, pas une différence absolue :
+    //     taux = somme des minimums / somme des maximums, pixel à pixel
+    // 1,00 = même lettre au même crénelage ; 0,60 = même forme un peu décalée ou plus
+    // épaisse ; 0,20 = rien à voir. C'est tolérant là où la différence absolue ne l'est
+    // pas (graisse, sous-pixel), et c'est ce que demande une comparaison de forme.
+    // On rend 1 - taux pour garder partout la convention « petit = meilleur ».
     if (std::abs((int)a.w - (int)b.w) > 2 || std::abs((int)a.h - (int)b.h) > 2) return 1.0f;
 
-    float meilleur = 1.0f;
+    float meilleur = 0.0f;   // meilleur taux
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx) {
-            int somme = 0, n = 0;
+            int bas = 0, haut = 0;
             for (int y = 0; y < a.h; ++y)
                 for (int x = 0; x < a.w; ++x) {
                     const int xb = x + dx, yb = y + dy;
                     const int vb = (xb >= 0 && xb < b.w && yb >= 0 && yb < b.h)
                                        ? b.px[yb * GP_W + xb] : 0;
-                    somme += std::abs((int)a.px[y * GP_W + x] - vb);
-                    ++n;
+                    const int va = a.px[y * GP_W + x];
+                    bas += std::min(va, vb);
+                    haut += std::max(va, vb);
                 }
-            meilleur = std::min(meilleur, (float)somme / (float)(n * 255));
+            if (haut > 0) meilleur = std::max(meilleur, (float)bas / (float)haut);
         }
-    return meilleur;
+    return 1.0f - meilleur;
 }
 
 const Lecteur::Table* Lecteur::table_pour(size_t indice_police, int taille) {
@@ -214,7 +220,9 @@ float Lecteur::noter(const Table& t, const std::vector<Glyphe>& glyphes, size_t 
                 std::abs((int)r.h - (int)glyphes[i].h) > 1) continue;
             d_min = std::min(d_min, ecart_avec_decalage(glyphes[i], r));
         }
-        if (d_min < 0.25f) { ++expliquees; somme += d_min; }
+        // 0,40 d'écart au taux = 60 % de recouvrement : le seuil de « cette police
+        // explique cette lettre » avec la nouvelle mesure.
+        if (d_min < 0.40f) { ++expliquees; somme += d_min; }
     }
     if (!vus) return 1.0f;
     const float taux = (float)expliquees / (float)vus;      // 1,0 = tout est expliqué
@@ -569,7 +577,7 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
 
         // 0,30 plutôt que 0,20 : au-delà, mieux vaut rendre la lettre la plus proche que
         // perdre l'information. Un « ? » n'apprend rien à qui lit.
-        const bool un_vaut = c && d_un <= 0.30f;
+        const bool un_vaut = c && d_un <= 0.45f;
         const bool grille = !cellules.empty() && cellules.size() == glyphes.size();
         // Deux lettres soudées : si une seule n'explique rien (d_un > 0,30), l'hypothèse
         // « deux » est la bonne même si elle n'écrase pas l'autre — il n'y a pas d'autre.
