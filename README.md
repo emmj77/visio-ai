@@ -13,7 +13,7 @@ documents (SLM tool-use only, API visuelle, dessin ASCII et Krita, plan d'archit
 | M0 | socle, sonde d'écran, banc de capture | fait |
 | M1 | DAMAGE par fenêtre, fusion de rectangles | fait |
 | M2 | diff par tuiles, liste des fenêtres clientes | fait |
-| M3 | nommer : segmentation, catalogue d'éléments, lignes de texte, OCR | en cours |
+| M3 | nommer : segmentation, catalogue d'éléments, lignes de texte, lecture des lettres | en cours |
 | M4 | agir : XTest, XI2, gestes | à faire |
 | M5 | protocole socket Unix NDJSON | à faire |
 | M6 | gestes utiles de bout en bout | à faire |
@@ -78,6 +78,23 @@ Deux filtres, appris en exécution : un filet de 1 à 4 px est un séparateur, p
 cible ; une région de 7x11 est une lettre — sur un terminal, sans filtre, 53 éléments
 dont 40 lettres. Et le fond de fenêtre n'est pas répété en panneau.
 
+## Lire les lettres
+
+Pas d'OCR : les lettres ont une forme, on la compare. Pour une typo et une taille données,
+un caractère rend toujours les mêmes pixels — et `FreeType`, le moteur que toutes les
+applications utilisent, sait les rendre.
+
+1. la bande de texte est découpée en lettres (composantes connexes, puis regroupement
+   par recouvrement : le point du « i » rejoint sa hampe) ;
+2. le lecteur identifie seul la police et la taille, en comparant les **dimensions** de
+   chaque lettre aux tables rendues par FreeType, puis l'écart de pixels ;
+3. chaque lettre est comparée aux 95 caractères rendus à cette taille ; un segment qui
+   ne correspond à rien est essayé comme deux lettres soudées.
+
+    ./build/unit_glyph          # témoins 11, 13 et 16 px
+
+Aucune découpe de l'écran : une seule capture, toutes les lignes.
+
 ## Bancs
 
 ```sh
@@ -100,7 +117,9 @@ dont 40 lettres. Et le fond de fenêtre n'est pas répété en panneau.
 | segmentation par couleur, 1 Mpx | 8,9 à 12,0 ms | `visio --win` |
 | catalogue (50 éléments) | 0,01 à 0,03 ms | `visio --win` |
 | lignes de texte (45 lignes) | 2,0 ms | `visio --win` |
-| OCR par bandeau | 27 à 50 ms (250 à 480 px de large) | `visio --win --ocr` |
+| lignes d'une fenêtre entière | 44 lignes en 2,13 ms (840x973) | `visio --win --lire` |
+| lecture des lettres | 18/19 à 16 px, 16/19 à 13 px, 2/19 à 11 px | `unit_glyph` |
+| identification de la typo | 36 à 50 ms la première ligne, puis 1 à 10 ms | `unit_glyph` |
 | tesseract, bandeau 400x25 | 5,56 ms (contre 95-155 ms en CLI) | `bench_ocr` |
 
 Deux conséquences inscrites dans le code :
