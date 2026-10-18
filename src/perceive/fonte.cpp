@@ -253,40 +253,112 @@ Glyphe decouper(const Glyphe& g, int x0, int x1) {
 
 } // namespace
 
+void Lecteur::identifier(const std::vector<Glyphe>& ech, int hauteur) {
+    if (ech.empty()) return;
+
+    // D'abord la taille avec la première police : la taille change peu le dessin d'une
+    // police, la police change tout.
+    int taille_0 = 0;
+    float score_0 = 1e9f;
+    for (int t = std::max(6, hauteur); t <= (int)(1.55f * (float)hauteur); ++t) {
+        const Table* tab = table_pour(0, t);
+        if (!tab) continue;
+        const float s = noter(*tab, ech, 0);
+        if (s < score_0) { score_0 = s; taille_0 = t; }
+    }
+    if (!taille_0) {
+        taille_0 = hauteur;
+        score_0 = 1e9f;
+    }
+
+    // Puis la police, à cette taille.
+    size_t meilleure_police = 0;
+    float meilleur_score = score_0;
+    for (size_t p = 0; p < polices_.size() && p < 16; ++p) {
+        const Table* tab = table_pour(p, taille_0);
+        if (!tab) continue;
+        const float s = noter(*tab, ech, 0);
+        if (s < meilleur_score) { meilleur_score = s; meilleure_police = p; }
+        if (meilleur_score < 0.06f) break;   // assez sûr : inutile d'essayer les suivantes
+    }
+
+    // Enfin la taille, pour la police retenue : un pixel d'écart fait passer un « s » pour
+    // un trou.
+    int taille = taille_0;
+    float best = meilleur_score;
+    for (int t = std::max(6, hauteur - 1); t <= (int)(1.55f * (float)hauteur) + 1; ++t) {
+        const Table* tab = table_pour(meilleure_police, t);
+        if (!tab) continue;
+        const float s = noter(*tab, ech, 0);
+        if (s < best) { best = s; taille = t; }
+    }
+
+    score_ = best;
+    police_ = meilleure_police;
+    police_fixee_ = true;
+    trouvees_[hauteur] = {meilleure_police, taille};
+    police_choisie_ = polices_[meilleure_police];
+    taille_choisie_ = taille;
+}
+
+void Lecteur::calibrer(const Frame& f, const std::vector<LigneTexte>& lignes, uint32_t fond) {
+    if (lignes.empty()) return;
+
+    // La hauteur la plus représentée : c'est le corps de texte de la fenêtre.
+    std::unordered_map<int, int> compte;
+    for (const auto& l : lignes) ++compte[l.rect.h];
+    int hauteur = 0, frequent = 0;
+    for (const auto& [h, n] : compte)
+        if (n > frequent) { frequent = n; hauteur = h; }
+
+    // Les bandes les plus larges à cette hauteur : beaucoup de lettres, donc peu de hasard.
+    std::vector<const LigneTexte*> choisies;
+    for (const auto& l : lignes)
+        if (l.rect.h == hauteur) choisies.push_back(&l);
+    std::sort(choisies.begin(), choisies.end(),
+              [](const LigneTexte* a, const LigneTexte* b) { return a->rect.w > b->rect.w; });
+
+    std::vector<Glyphe> ech;
+    for (size_t i = 0; i < choisies.size() && i < 3 && ech.size() < 90; ++i) {
+        const auto gs = extraire_glyphes(f, *choisies[i], fond);
+        ech.insert(ech.end(), gs.begin(), gs.end());
+    }
+    if (ech.empty()) return;
+    identifier(ech, hauteur);
+
+    // Une typo qu'on n'explique pas bien ne doit pas être imposée : mieux vaut laisser
+    // chaque bande se débrouiller (plus lent, mais juste) que lire faux partout.
+    if (score_ > 0.20f) police_fixee_ = false;
+}
+
 std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond) {
     const auto glyphes = extraire_glyphes(f, ligne, fond);
     if (glyphes.empty()) return {};
 
-    // 1. identification : (police, taille). Une fois par hauteur de texte.
+    // 1. la typo de la fenêtre est-elle connue ? Sinon on l'apprend sur cette bande.
     const int hauteur = ligne.rect.h;
-    auto it = trouvees_.find(hauteur);
-    if (it == trouvees_.end()) {
-        size_t meilleure_police = 0;
-        int meilleure_taille = 0;
-        float meilleur_score = 1.0f;
-
-        // D'abord la taille, avec la première police : la taille change peu le dessin
-        // d'une police, la police change tout.
-        int taille_0 = 0;
-        for (int t = std::max(6, hauteur); t <= (int)(1.55f * (float)hauteur); ++t) {
-            const Table* tab = table_pour(0, t);
-            if (!tab) continue;
-            const float s = noter(*tab, glyphes, 0);
-            if (s < meilleur_score) { meilleur_score = s; meilleure_taille = t; taille_0 = t; }
+    if (!trouvees_.count(hauteur)) {
+        if (police_fixee_) {
+            // Police connue : il ne reste que la taille à trouver, et c'est rapide.
+            int taille = hauteur;
+            float meilleur = 1e9f;
+            for (int t = std::max(6, hauteur - 1); t <= (int)(1.55f * (float)hauteur) + 1; ++t) {
+                const Table* tab = table_pour(police_, t);
+                if (!tab) continue;
+                const float s = noter(*tab, glyphes, 0);
+                if (s < meilleur) { meilleur = s; taille = t; }
+            }
+            // La typo de la fenêtre ne suffit pas toujours : un titre en gras, une bande
+            // d'une autre police. Si elle n'explique pas cette hauteur, on re-cherche.
+            if (meilleur > 0.15f)
+                identifier(glyphes, hauteur);
+            else
+                trouvees_[hauteur] = {police_, taille};
+        } else {
+            identifier(glyphes, hauteur);
         }
-        // Puis la police, à cette taille.
-        taille_0 = taille_0 ? taille_0 : hauteur;
-        for (size_t p = 0; p < polices_.size() && p < 16; ++p) {
-            const Table* tab = table_pour(p, taille_0);
-            if (!tab) continue;
-            const float s = noter(*tab, glyphes, 0);
-            if (s < meilleur_score) { meilleur_score = s; meilleure_police = p; }
-            if (meilleur_score < 0.06f) break;   // assez sûr : inutile d'essayer les suivantes
-        }
-        if (!meilleure_taille) meilleure_taille = taille_0;
-        trouvees_[hauteur] = {meilleure_police, meilleure_taille};
-        it = trouvees_.find(hauteur);
     }
+    auto it = trouvees_.find(hauteur);
 
     const Table* table = table_pour(it->second.first, it->second.second);
     if (!table) return std::string(glyphes.size(), '?');

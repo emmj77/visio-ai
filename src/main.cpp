@@ -88,6 +88,18 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 fond & 0xFFFFFF);
 
     visio::Lecteur lecteur;   // rend les caractères avec FreeType, comme les applications
+    if (g_lire && !lignes.empty()) {
+        // Une fois par fenêtre : on apprend sa typo sur les bandes les plus fournies.
+        const auto t1 = std::chrono::steady_clock::now();
+        lecteur.calibrer(f, lignes, fond);
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t1).count();
+        if (lecteur.police_connue())
+            std::printf("typo         %s, %.2f ms (une fois pour la fenetre)\n",
+                        lecteur.police().c_str(), ms);
+        else
+            std::printf("typo         non identifiee, %.2f ms (chaque bande cherchera)\n", ms);
+    }
     const size_t maxl = lignes.size() < 12 ? lignes.size() : 12;
     for (size_t i = 0; i < maxl; ++i) {
         const auto& l = lignes[i];

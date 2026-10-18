@@ -50,6 +50,13 @@ public:
 
     std::string lire(const Frame& f, const LigneTexte& ligne, uint32_t fond);
 
+    // Apprend la typo de la fenêtre UNE fois : on échantillonne les lignes les plus
+    // fournies, on identifie (police, taille), et toutes les bandes suivantes n'ont plus
+    // qu'à chercher leur taille. C'est ce qui fait tomber le coût d'identification de
+    // « à chaque bande » à « une fois par fenêtre ».
+    void calibrer(const Frame& f, const std::vector<LigneTexte>& lignes, uint32_t fond);
+    bool police_connue() const noexcept { return police_fixee_; }
+
     // Ce que le lecteur a fini par choisir, pour le journal.
     const std::string& police() const noexcept { return police_choisie_; }
     int taille() const noexcept { return taille_choisie_; }
@@ -61,6 +68,13 @@ private:
     };
 
     const Table* table_pour(size_t indice_police, int taille);
+
+    // Identifie (police, taille) sur un échantillon de lettres, et le retient.
+    void identifier(const std::vector<Glyphe>& echantillon, int hauteur);
+
+    size_t police_ = 0;
+    bool   police_fixee_ = false;
+    float  score_ = 1e9f;      // qualité de la dernière identification
 
     // Note le premier glyphe lisible trouvé et compare : renvoie l'écart moyen des
     // meilleures correspondances, 1,0 si rien ne colle.
