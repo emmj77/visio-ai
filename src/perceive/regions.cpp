@@ -288,9 +288,24 @@ std::vector<Region> boites_fermees(const Frame& f, int seuil_encre, int cote_min
         for (uint8_t v : m) if (v == 0) ++trou;
         if (trou < 25) continue;      // un trou d'antialiasing n'est pas un intérieur
 
+        // Un rectangle pose son encre SUR son bord ; un rond ou un triangle ne le touche
+        // qu'en quelques points. Le plan s'en sert pour choisir entre dessiner un cadre et
+        // laisser la forme se voir.
+        int64_t sur_bord = 0;
+        for (int y = 0; y < h; ++y) {
+            const bool lignebord = (y <= 1 || y >= h - 2);
+            for (int x = 0; x < w; ++x) {
+                if (m[(size_t)y * (size_t)w + (size_t)x] != 1) continue;
+                if (lignebord || x <= 1 || x >= w - 2) ++sur_bord;
+            }
+        }
+
         fermee[c] = 1;
         const Rect rect{f.region.x + b.x0, f.region.y + b.y0, w, h};
-        out.push_back(Region{rect, 0, b.n, (double)b.n / (double)rect.area()});
+        Region rg{rect, 0, b.n, (double)b.n / (double)rect.area()};
+        rg.cadre = true;
+        rg.sur_bord = b.n > 0 ? (double)sur_bord / (double)b.n : 0.0;
+        out.push_back(rg);
     }
     if (out.empty()) return out;
 

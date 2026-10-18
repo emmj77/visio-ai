@@ -15,6 +15,12 @@ struct Region {
     uint32_t couleur = 0;     // couleur moyenne de la région (ARGB)
     int64_t  pixels = 0;      // nombre de pixels de la région
     double   remplissage = 0; // pixels / aire de rect : 1.0 = rectangle plein
+    // Renseigné par `boites_fermees` seulement : la région est une forme FERMÉE.
+    bool     cadre = false;
+    // Part de l'encre posée sur le bord de la boîte : 1,0 = un rectangle, 0,3 = un rond
+    // ou un triangle (le trait ne touche le bord qu'en quelques points). C'est ce qui
+    // permet au plan de dessiner un cadre en rectangle et un rond... en rond.
+    double   sur_bord = 1.0;
 };
 
 // `quant` : bits ignorés par canal (5 = on regroupe les couleurs proches).

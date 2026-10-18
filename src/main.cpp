@@ -205,9 +205,10 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     }
 
 
-    // --ascii : LA PAGE EN PLAN. Ce n'est pas une carte de densite, c'est un PLAN : les
-    // zones du catalogue sont dessinees avec leur cadre et leur nom, la plus grande d'abord
-    // puis les plus petites par-dessus. L'agent lit la structure, pas une texture.
+    // --ascii : LA PAGE EN PLAN. Deux couches. D'abord l'ENCRE, case par case : c'est ce
+    // qui est DESSINE, et c'est la seule couche qui montre qu'un rond est rond (un cadre
+    // rectangulaire ne le dit pas). Puis la STRUCTURE : les zones du catalogue avec leur
+    // cadre et leur nom, la plus grande d'abord, les plus petites par-dessus.
     if (g_ascii) {
         const int cell = 20;
         const int cols = std::max(1, f.region.w / cell), rows = std::max(1, f.region.h / cell);
@@ -220,9 +221,35 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 case visio::Genre::Bouton:  return "bouton";
                 case visio::Genre::Champ:   return "champ";
                 case visio::Genre::Texte:   return "texte";
+                case visio::Genre::Cadre:   return "cadre";
                 default: return "zone";
             }
         };
+
+        // 1. l'encre. Un pixel s'ecarte du fond ; la case prend la densite.
+        std::vector<int> encre((size_t)cols * (size_t)rows, 0);
+        {
+            const int fr = (int)((fond >> 16) & 0xFF), fg = (int)((fond >> 8) & 0xFF),
+                      fb = (int)(fond & 0xFF);
+            for (int y = 0; y < f.region.h; ++y) {
+                const uint32_t* p = f.px.data() + (size_t)y * f.region.w;
+                const size_t ligne = (size_t)(y / cell) * (size_t)cols;
+                for (int x = 0; x < f.region.w; ++x) {
+                    const int dr = std::abs((int)((p[x] >> 16) & 0xFF) - fr);
+                    const int dg = std::abs((int)((p[x] >> 8) & 0xFF) - fg);
+                    const int db = std::abs((int)(p[x] & 0xFF) - fb);
+                    if (dr > 16 || dg > 16 || db > 16) ++encre[ligne + (size_t)(x / cell)];
+                }
+            }
+            for (int cy = 0; cy < rows; ++cy)
+                for (int cx = 0; cx < cols; ++cx) {
+                    const double d = (double)encre[(size_t)cy * (size_t)cols + (size_t)cx] /
+                                     (double)(cell * cell);
+                    gr[(size_t)cy][(size_t)cx] = d >= 0.55 ? '#' : d >= 0.30 ? '*'
+                                                : d >= 0.12 ? ':' : d > 0.02 ? '.' : ' ';
+                }
+        }
+
         std::vector<const visio::Element*> zs;
         zs.reserve(elements.size());
         for (const auto& e : elements) zs.push_back(&e);
@@ -230,27 +257,61 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                   [](const visio::Element* a, const visio::Element* b) {
                       return a->rect.area() > b->rect.area();
                   });
+        size_t formes = 0;
+        std::vector<visio::Rect> interieurs;   // les cadres déjà dessinés
         for (const auto* e : zs) {
             const visio::Rect& r = e->rect;
+            // Ce qui est DEDANS une forme fermée n'est pas redessiné : l'intérieur d'un
+            // rond est un rectangle de la même taille, et le dessiner transforme le rond en
+            // carré. Une ligne de texte non plus : l'encre la montre déjà.
+            if (!e->cadre) {
+                if (e->genre == visio::Genre::Texte) continue;
+                bool dedans = false;
+                for (const auto& c : interieurs)
+                    if (r.x > c.x && r.y > c.y && r.x + r.w < c.x + c.w && r.y + r.h < c.y + c.h) {
+                        dedans = true;
+                        break;
+                    }
+                if (dedans) continue;
+            } else {
+                interieurs.push_back(r);
+            }
             int x0 = (r.x - f.region.x) / cell, y0 = (r.y - f.region.y) / cell;
             int x1 = (r.x + r.w - f.region.x) / cell, y1 = (r.y + r.h - f.region.y) / cell;
             x0 = std::max(0, std::min(x0, cols - 1)); x1 = std::max(0, std::min(x1, cols - 1));
             y0 = std::max(0, std::min(y0, rows - 1)); y1 = std::max(0, std::min(y1, rows - 1));
+            char id[12];
+            std::snprintf(id, sizeof id, "%06lx", (unsigned long)(e->id & 0xFFFFFF));
+
+            // Une forme fermee qui n'est PAS rectangulaire ne recoit pas de cadre : le
+            // dessiner en rectangle mentirait sur sa forme. C'est l'encre qui la montre ;
+            // on ne pose que son nom, sur sa premiere ligne.
+            if (e->cadre && e->sur_bord < 0.75) {
+                ++formes;
+                std::string lab = std::string(nom(e->genre)) + " " + id;
+                const int place = std::max(0, x1 - x0);
+                if (place > 3) {
+                    if ((int)lab.size() > place) lab = lab.substr(0, (size_t)place);
+                    for (size_t k = 0; k < lab.size(); ++k)
+                        gr[(size_t)y0][(size_t)x0 + k] = lab[k];
+                }
+                continue;
+            }
             if (x1 - x0 < 3 || y1 - y0 < 2) continue;
+            // Les traits du cadre sont STRUCTURELS : ils passent sur l'encre (sinon un
+            // point d'encre coupe la bordure et le plan devient illisible).
             for (int x = x0; x <= x1; ++x) {
-                if (gr[(size_t)y0][(size_t)x] == ' ') gr[(size_t)y0][(size_t)x] = '-';
-                if (gr[(size_t)y1][(size_t)x] == ' ') gr[(size_t)y1][(size_t)x] = '-';
+                gr[(size_t)y0][(size_t)x] = '-';
+                gr[(size_t)y1][(size_t)x] = '-';
             }
             for (int y = y0; y <= y1; ++y) {
-                if (gr[(size_t)y][(size_t)x0] == ' ') gr[(size_t)y][(size_t)x0] = '|';
-                if (gr[(size_t)y][(size_t)x1] == ' ') gr[(size_t)y][(size_t)x1] = '|';
+                gr[(size_t)y][(size_t)x0] = '|';
+                gr[(size_t)y][(size_t)x1] = '|';
             }
             gr[(size_t)y0][(size_t)x0] = '+'; gr[(size_t)y0][(size_t)x1] = '+';
             gr[(size_t)y1][(size_t)x0] = '+'; gr[(size_t)y1][(size_t)x1] = '+';
             // Etiquette : genre + debut d'identifiant, TOUJOURS rognee a la largeur du cadre,
             // sinon le plan devient illisible (la bordure disparait).
-            char id[12];
-            std::snprintf(id, sizeof id, "%06lx", (unsigned long)(e->id & 0xFFFFFF));
             std::string lab = std::string(" ") + nom(e->genre) + " " + id + " ";
             const int place = x1 - x0 - 1;
             if (y0 + 1 < y1 && place > 3) {
@@ -258,8 +319,9 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 for (size_t k = 0; k < lab.size(); ++k) gr[(size_t)y0 + 1][(size_t)x0 + 1 + k] = lab[k];
             }
         }
-        std::printf("\nplan         %dx%d cases de %d px, %zu zones\n", cols, rows, cell,
-                    elements.size());
+        std::printf("\nplan         %dx%d cases de %d px, %zu zones dont %zu formes non "
+                    "rectangulaires\n", cols, rows, cell, elements.size(), formes);
+        std::printf("encre        ' ' rien  '.' trait  ':' clairseme  '*' dense  '#' plein\n");
         for (const auto& l : gr) std::printf("|%s|\n", l.c_str());
     }
 

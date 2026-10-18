@@ -13,6 +13,7 @@ const char* nom_genre(Genre g) {
         case Genre::Bouton:  return "bouton";
         case Genre::Champ:   return "champ";
         case Genre::Texte:   return "texte";
+        case Genre::Cadre:   return "cadre";
         default:             return "?";
     }
 }
@@ -78,7 +79,12 @@ const std::vector<Element>& Catalogue::maj(Window fenetre, const std::vector<Reg
         e.rect = r.rect;
         e.couleur = r.couleur;
         e.pixels = r.pixels;
-        e.genre = deviner_genre(r.rect, cadre, r.remplissage);
+        e.cadre = r.cadre;
+        e.sur_bord = r.sur_bord;
+        // Une forme fermée est un CADRE, pas une « zone » : c'est ce que l'agent cherche
+        // quand il veut cliquer. Le genre deviné ne sait pas voir une bordure (remplissage
+        // 0,02) et rendrait Inconnu.
+        e.genre = r.cadre ? Genre::Cadre : deviner_genre(r.rect, cadre, r.remplissage);
         e.id = identifiant(fenetre, e.genre, e.rect);
         courants_.push_back(e);
     }

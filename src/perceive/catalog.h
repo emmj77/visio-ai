@@ -21,6 +21,7 @@ enum class Genre : uint8_t {
     Bouton,
     Champ,
     Texte,
+    Cadre,     // une forme fermée : bouton bordé, carte, rond, triangle
     Inconnu,
 };
 
@@ -34,6 +35,8 @@ struct Element {
     Window   fenetre = 0;
     int      seq = 0;       // change quand l'élément change
     int64_t  pixels = 0;
+    bool     cadre = false; // vient de `boites_fermees`
+    double   sur_bord = 1.0;
 };
 
 // Catalogue persistant : il se souvient, d'une image à l'autre, de ce qu'il a déjà vu,
