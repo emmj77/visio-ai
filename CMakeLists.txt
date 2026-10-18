@@ -1,0 +1,43 @@
+cmake_minimum_required(VERSION 3.25)
+project(visio_ai LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+add_compile_options(-Wall -Wextra -Wpedantic)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(X11     REQUIRED IMPORTED_TARGET x11)
+pkg_check_modules(XEXT    REQUIRED IMPORTED_TARGET xext)
+pkg_check_modules(XDAMAGE REQUIRED IMPORTED_TARGET xdamage)
+pkg_check_modules(XTST    REQUIRED IMPORTED_TARGET xtst)
+pkg_check_modules(XI      REQUIRED IMPORTED_TARGET xi)
+pkg_check_modules(XFIXES  REQUIRED IMPORTED_TARGET xfixes)
+
+# --- noyau : aucune socket, aucun protocole, seulement la machine -------
+add_library(visio_core STATIC
+  src/capture/screen_info.cpp
+)
+target_include_directories(visio_core PUBLIC src)
+target_link_libraries(visio_core PUBLIC PkgConfig::X11 PkgConfig::XEXT)
+
+# --- binaire principal --------------------------------------------------
+add_executable(visio src/main.cpp)
+target_link_libraries(visio PRIVATE visio_core)
+
+# --- bancs --------------------------------------------------------------
+add_executable(bench_capture bench/bench_capture.cpp)
+target_link_libraries(bench_capture PRIVATE visio_core)
+
+add_executable(bench_damage bench/bench_damage.cpp)
+target_link_libraries(bench_damage PRIVATE visio_core PkgConfig::XDAMAGE PkgConfig::XFIXES)
+
+# --- tests --------------------------------------------------------------
+enable_testing()
+add_executable(unit_rect tests/unit_rect.cpp)
+target_link_libraries(unit_rect PRIVATE visio_core)
+add_test(NAME unit_rect COMMAND unit_rect)
