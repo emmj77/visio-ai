@@ -36,6 +36,7 @@ std::string g_clic;        // --clic <texte> : cliquer la cible dont l'etiquette
 std::string g_taper;       // --taper <texte> : ecrire au clavier, caractere par caractere
 bool g_delta = false;      // --delta : ne rendre que ce qui a change depuis le dernier scan
 bool g_formes = false;     // --formes : les cibles NON textuelles (icones, cases, curseurs)
+std::string g_dump;        // --dump "x,y,w,h fichier.ppm" : sortir les pixels d'une zone
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -140,6 +141,36 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 fond & 0xFFFFFF);
 
     visio::Lecteur lecteur;   // rend les caractères avec FreeType, comme les applications
+
+
+    // --dump "x,y,w,h fichier.ppm" : sortir les pixels bruts d'une zone. Sert a confronter
+    // une cible reelle a une banque d'images (les icones du systeme, par exemple).
+    if (!g_dump.empty()) {
+        int dx = 0, dy = 0, dw = 0, dh = 0;
+        char fic[512] = {0};
+        if (std::sscanf(g_dump.c_str(), "%d,%d,%d,%d %511s", &dx, &dy, &dw, &dh, fic) == 5) {
+            std::ofstream out(fic, std::ios::binary);
+            out << "P6\n" << dw << " " << dh << "\n255\n";
+            size_t ecrits = 0;
+            for (int yy = dy; yy < dy + dh; ++yy) {
+                const int ly = yy - f.region.y;
+                if (ly < 0 || ly >= f.region.h) continue;
+                const uint32_t* row = f.px.data() + (size_t)ly * f.region.w;
+                for (int xx = dx; xx < dx + dw; ++xx) {
+                    const int lx = xx - f.region.x;
+                    if (lx < 0 || lx >= f.region.w) continue;
+                    const uint32_t p = row[lx];
+                    const char rgb[3] = {(char)((p >> 16) & 0xFF), (char)((p >> 8) & 0xFF),
+                                         (char)(p & 0xFF)};
+                    out.write(rgb, 3);
+                    ++ecrits;
+                }
+            }
+            std::printf("dump         %zu pixels -> %s\n", ecrits, fic);
+        } else {
+            std::printf("dump         format attendu : \"x,y,w,h fichier.ppm\"\n");
+        }
+    }
 
     // --cibles : la decoupe FINE. Un mot = une cible ; chaque cible porte un identifiant et
     // son etiquette. C'est ce que l'agent recoit : il choisit un id, il ne voit pas de pixels.
@@ -378,6 +409,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--taper") == 0 && i + 1 < argc) g_taper = argv[++i];
         if (std::strcmp(argv[i], "--delta") == 0) { g_delta = true; g_cibles = true; g_lire = true; }
         if (std::strcmp(argv[i], "--formes") == 0) { g_formes = true; g_lire = true; }
+        if (std::strcmp(argv[i], "--dump") == 0 && i + 1 < argc) g_dump = argv[++i];
     }
 
     Display* d = XOpenDisplay(nullptr);
