@@ -17,6 +17,10 @@
 #include <X11/extensions/XTest.h>
 #include <X11/keysym.h>
 
+#include <map>
+#include <fstream>
+#include <filesystem>
+#include <tuple>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +34,7 @@ bool g_etiquettes = false; // --etiquettes : nommer chaque élément par son tex
 bool g_cibles = false;     // --cibles : les cibles cliquables, un mot = une cible
 std::string g_clic;        // --clic <texte> : cliquer la cible dont l'etiquette contient ce texte
 std::string g_taper;       // --taper <texte> : ecrire au clavier, caractere par caractere
+bool g_delta = false;      // --delta : ne rendre que ce qui a change depuis le dernier scan
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -140,6 +145,7 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     if (g_cibles) {
         const auto t5 = std::chrono::steady_clock::now();
         bool deja_clique = false;
+        std::vector<std::tuple<uint64_t, std::string, visio::Rect>> vus;
         visio::Lecteur lecteur;
         size_t total = 0;
         std::printf("\ncibles       (un mot = une cible, lecture mot par mot)\n");
@@ -168,8 +174,10 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                                            std::to_string(r.x) + "," + std::to_string(r.y) + "," +
                                            std::to_string(r.w) + "x" + std::to_string(r.h);
                     for (unsigned char ch : gk) { id ^= ch; id *= 1099511628211ull; }
-                    std::printf("  %016lx  cliquer  %4dx%-3d @%5d,%-4d  « %s »\n", id, r.w, r.h,
-                                r.x, r.y, txt.c_str());
+                    vus.emplace_back(id, txt, r);
+                    if (!g_delta)
+                        std::printf("  %016lx  cliquer  %4dx%-3d @%5d,%-4d  « %s »\n", id, r.w,
+                                    r.h, r.x, r.y, txt.c_str());
                     ++total;
 
                     // --clic : le geste lui-meme. On vise le CENTRE de la cible, on
@@ -187,6 +195,49 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 }
                 debut = k;
             }
+        }
+
+        if (g_delta) {
+            const char* home = std::getenv("HOME");
+            const std::string base = std::string(home ? home : ".") + "/.cache/visio";
+            const std::string chemin = base + "/" + std::to_string((int)fenetre) + ".txt";
+            std::map<std::string, std::string> avant;
+            {
+                std::ifstream in(chemin);
+                std::string l2;
+                while (std::getline(in, l2)) {
+                    const auto p = l2.find(' ');
+                    if (p == std::string::npos) continue;
+                    avant[l2.substr(0, p)] = l2.substr(p + 1);
+                }
+            }
+            std::map<std::string, std::string> apres;
+            size_t nouveaux = 0, changes = 0;
+            for (const auto& v : vus) {
+                char id_hex[32], etat[192];
+                std::snprintf(id_hex, sizeof id_hex, "%016lx", std::get<0>(v));
+                const visio::Rect& r = std::get<2>(v);
+                std::snprintf(etat, sizeof etat, "%d,%d,%dx%d|%s", r.x, r.y, r.w, r.h,
+                              std::get<1>(v).c_str());
+                apres[id_hex] = etat;
+                const auto it = avant.find(id_hex);
+                if (it == avant.end()) {
+                    std::printf("  +  %s  %s\n", id_hex, etat);
+                    ++nouveaux;
+                } else if (it->second != etat) {
+                    std::printf("  ~  %s  %s\n", id_hex, etat);
+                    ++changes;
+                }
+            }
+            size_t partis = 0;
+            for (const auto& a : avant)
+                if (!apres.count(a.first)) { std::printf("  -  %s\n", a.first.c_str()); ++partis; }
+            std::error_code ec;
+            std::filesystem::create_directories(base, ec);
+            std::ofstream out(chemin, std::ios::trunc);
+            for (const auto& a : apres) out << a.first << ' ' << a.second << '\n';
+            std::printf("delta        %zu nouveaux, %zu modifies, %zu disparus (%zu cibles)\n",
+                        nouveaux, changes, partis, apres.size());
         }
         std::printf("cibles       %zu en %.1f ms\n", total,
                     std::chrono::duration<double, std::milli>(
@@ -239,6 +290,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--cibles") == 0) { g_cibles = true; g_lire = true; }
         if (std::strcmp(argv[i], "--clic") == 0 && i + 1 < argc) { g_clic = argv[++i]; g_cibles = true; g_lire = true; }
         if (std::strcmp(argv[i], "--taper") == 0 && i + 1 < argc) g_taper = argv[++i];
+        if (std::strcmp(argv[i], "--delta") == 0) { g_delta = true; g_cibles = true; g_lire = true; }
     }
 
     Display* d = XOpenDisplay(nullptr);
