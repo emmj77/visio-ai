@@ -17,6 +17,7 @@ pkg_check_modules(XDAMAGE REQUIRED IMPORTED_TARGET xdamage)
 pkg_check_modules(XTST    REQUIRED IMPORTED_TARGET xtst)
 pkg_check_modules(XI      REQUIRED IMPORTED_TARGET xi)
 pkg_check_modules(XFIXES  REQUIRED IMPORTED_TARGET xfixes)
+pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
 
 # --- noyau : aucune socket, aucun protocole, seulement la machine -------
 add_library(visio_core STATIC
@@ -28,10 +29,12 @@ add_library(visio_core STATIC
   src/perceive/regions.cpp
   src/perceive/catalog.cpp
   src/perceive/text_lines.cpp
-  src/perceive/ocr.cpp
+  src/perceive/glyph.cpp
+  src/perceive/fonte.cpp
 )
 target_include_directories(visio_core PUBLIC src)
 target_link_libraries(visio_core PUBLIC
+  PkgConfig::FREETYPE
   PkgConfig::X11 PkgConfig::XEXT PkgConfig::XDAMAGE PkgConfig::XFIXES ${CMAKE_DL_LIBS})
 
 # --- binaire principal --------------------------------------------------
@@ -41,18 +44,6 @@ target_link_libraries(visio PRIVATE visio_core)
 # --- bancs --------------------------------------------------------------
 add_executable(bench_capture bench/bench_capture.cpp)
 target_link_libraries(bench_capture PRIVATE visio_core)
-
-# tesseract : la bibliothèque est là (libtesseract.so.5), les en-têtes non.
-# On ne tire pas les 44 paquets de libtesseract-dev : le banc déclare l'API C qu'il utilise.
-find_library(TESSERACT_LIB NAMES tesseract.so.5 libtesseract.so.5
-             PATHS /usr/lib/x86_64-linux-gnu NO_DEFAULT_PATH)
-add_executable(bench_ocr bench/bench_ocr.cpp)
-if(TESSERACT_LIB)
-  target_link_libraries(bench_ocr PRIVATE ${TESSERACT_LIB})
-  message(STATUS "tesseract : ${TESSERACT_LIB}")
-else()
-  message(WARNING "tesseract absent : bench_ocr non lie")
-endif()
 
 add_executable(bench_damage bench/bench_damage.cpp)
 target_link_libraries(bench_damage PRIVATE visio_core PkgConfig::XDAMAGE PkgConfig::XFIXES)
@@ -71,15 +62,14 @@ add_executable(unit_tile_diff tests/unit_tile_diff.cpp)
 target_link_libraries(unit_tile_diff PRIVATE visio_core)
 add_test(NAME unit_tile_diff COMMAND unit_tile_diff)
 
+add_executable(unit_glyph tests/unit_glyph.cpp)
+target_link_libraries(unit_glyph PRIVATE visio_core)
+add_test(NAME unit_glyph COMMAND unit_glyph)
+set_tests_properties(unit_glyph PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 add_executable(unit_text_lines tests/unit_text_lines.cpp)
 target_link_libraries(unit_text_lines PRIVATE visio_core)
 add_test(NAME unit_text_lines COMMAND unit_text_lines)
-
-add_executable(integration_ocr tests/integration_ocr.cpp)
-target_link_libraries(integration_ocr PRIVATE visio_core)
-add_test(NAME integration_ocr COMMAND integration_ocr)
-set_tests_properties(integration_ocr PROPERTIES SKIP_RETURN_CODE 77
-                       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(unit_catalog tests/unit_catalog.cpp)
 target_link_libraries(unit_catalog PRIVATE visio_core)

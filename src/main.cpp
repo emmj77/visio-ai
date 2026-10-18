@@ -8,7 +8,7 @@
 #include "common/log.h"
 #include "core/frame.h"
 #include "perceive/catalog.h"
-#include "perceive/ocr.h"
+#include "perceive/fonte.h"
 #include "perceive/regions.h"
 #include "perceive/text_lines.h"
 #include "perceive/windows.h"
@@ -23,7 +23,7 @@
 
 namespace {
 
-bool g_ocr = false;   // --ocr : lire les lignes détectées
+bool g_lire = false;   // --lire : reconnaître les caractères par leur forme
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -87,23 +87,21 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
     std::printf("\ntexte        %zu lignes en %.2f ms (fond #%06x)\n", lignes.size(), t_txt,
                 fond & 0xFFFFFF);
 
-    visio::Ocr ocr;   // 87 ms d'initialisation, une seule fois
-    const size_t maxl = lignes.size() < 10 ? lignes.size() : 10;
+    visio::Lecteur lecteur;   // rend les caractères avec FreeType, comme les applications
+    const size_t maxl = lignes.size() < 12 ? lignes.size() : 12;
     for (size_t i = 0; i < maxl; ++i) {
         const auto& l = lignes[i];
-        if (g_ocr && ocr.dispo()) {
-            const auto t1 = std::chrono::steady_clock::now();
-            const std::string lu = ocr.lire(f, l.rect);
-            const double ms = std::chrono::duration<double, std::milli>(
-                                  std::chrono::steady_clock::now() - t1).count();
-            std::printf("  %4dx%-3d @ %4d,%-4d  %.1f ms  « %s »\n", l.rect.w, l.rect.h, l.rect.x,
+        const auto t1 = std::chrono::steady_clock::now();
+        const std::string lu = g_lire ? lecteur.lire(f, l, fond) : std::string();
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t1).count();
+        if (g_lire)
+            std::printf("  %4dx%-3d @ %4d,%-4d  %6.2f ms  « %s »\n", l.rect.w, l.rect.h, l.rect.x,
                         l.rect.y, ms, lu.c_str());
-        } else {
+        else
             std::printf("  %4dx%-3d @ %4d,%-4d  densite %.2f\n", l.rect.w, l.rect.h, l.rect.x,
                         l.rect.y, l.densite);
-        }
     }
-    if (g_ocr && !ocr.dispo()) VISIO_WARN("OCR indisponible : %s", ocr.erreur());
 
     cap.release();
     return 0;
@@ -119,7 +117,7 @@ visio::Rect parse_rect(const char* s) {
 
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
-        if (std::strcmp(argv[i], "--ocr") == 0) g_ocr = true;
+        if (std::strcmp(argv[i], "--lire") == 0) g_lire = true;
 
     Display* d = XOpenDisplay(nullptr);
     if (!d) {
