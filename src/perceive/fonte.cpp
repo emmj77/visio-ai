@@ -544,7 +544,10 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
         // 0,30 plutôt que 0,20 : au-delà, mieux vaut rendre la lettre la plus proche que
         // perdre l'information. Un « ? » n'apprend rien à qui lit.
         const bool un_vaut = c && d_un <= 0.30f;
-        const bool deux_vaut = a && b && d_deux <= 0.20f && d_deux < 0.85f * d_un;
+        // Deux lettres soudées : si une seule n'explique rien (d_un > 0,30), l'hypothèse
+        // « deux » est la bonne même si elle n'écrase pas l'autre — il n'y a pas d'autre.
+        const bool deux_vaut = a && b && d_deux <= 0.35f &&
+                               (d_deux < 0.85f * d_un || d_un > 0.30f);
         if (deux_vaut) {
             out += a;
             out += b;
