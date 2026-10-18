@@ -76,17 +76,19 @@ Mesure, page temoin (geometrie connue, rendue par Firefox, 1880x1040) :
 
 ## Le pas du plan
 
-`--ascii [pas]` : la taille d'une case en pixels. Mesure sur une fenetre 1880x1040.
+`--ascii [pas]` : la taille d'une case en pixels. Jetons MESURES au tokenizer (o200k_base),
+page dense (about:preferences, 1880x1040) — et non estimes.
 
-    pas 20    94x52 cases     8 146 octets   ~2 000 jetons   un bouton 240x120 fait 12x6
-    pas 10   188x104 cases   22 969 octets   ~6 000 jetons   defaut : 1 caractere = 10 px
-    pas  5   376x208 cases   81 935 octets  ~20 000 jetons
-    pas  2   940x520 cases  493 464 octets ~125 000 jetons
-    pas  1  1880x1040       1 961 426 octets ~500 000 jetons  impossible (fenetre de contexte)
+    pas 10   188x104   20 378 car   1 562 jetons
+    pas  5   376x208   79 346 car   4 234 jetons
+    pas  4   470x260  123 494 car   5 709 jetons
+    pas  2   940x520  490 874 car  17 511 jetons
+    pas  1  1880x1040 1 958 834 car 42 913 jetons   <- 1 caractere = 1 pixel
 
-Un caractere par pixel n'est donc PAS gratuit : c'est 500 000 jetons pour une seule capture.
-10 px par case est le plus fin qui reste negligeable, et il suffit a voir un rond, un
-triangle et une diagonale a main levee.
+Lecon : une grille ASCII est surtout faite d'ESPACES, et un jeton encode des suites
+d'espaces (jusqu'a 30-70 caracteres par jeton ici). Compter « octets / 4 » surestime le cout
+d'un facteur 12. Un caractere par pixel reste donc payable (43 k jetons), pas impossible —
+mais il ne faut pas le payer a chaque tour d'une boucle d'agent.
 
 ## Le diagnostic qui compte
 
