@@ -25,6 +25,7 @@ namespace {
 
 bool g_lire = false;       // --lire : reconnaître les caractères par leur forme
 bool g_etiquettes = false; // --etiquettes : nommer chaque élément par son texte
+bool g_cibles = false;     // --cibles : les cibles cliquables, un mot = une cible
 
 int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre) {
     visio::ShmCapture cap(d);
@@ -129,6 +130,51 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                 fond & 0xFFFFFF);
 
     visio::Lecteur lecteur;   // rend les caractères avec FreeType, comme les applications
+
+    // --cibles : la decoupe FINE. Un mot = une cible ; chaque cible porte un identifiant et
+    // son etiquette. C'est ce que l'agent recoit : il choisit un id, il ne voit pas de pixels.
+    if (g_cibles) {
+        const auto t5 = std::chrono::steady_clock::now();
+        visio::Lecteur lecteur;
+        size_t total = 0;
+        std::printf("\ncibles       (un mot = une cible, lecture mot par mot)\n");
+        for (const auto& l : lignes) {
+            const auto gs = visio::extraire_glyphes(f, l, fond);
+            if (gs.empty()) continue;
+            size_t debut = 0;
+            for (size_t k = 1; k <= gs.size(); ++k) {
+                bool coupe = (k == gs.size());
+                if (!coupe) {
+                    const int ecart = gs[k].rect.x - gs[k - 1].rect.right();
+                    // Un espace separe deux mots ; sous 45 % de la hauteur, c'est la meme
+                    // cible (lettres soudées ou kerning serre).
+                    coupe = ecart > 0 && (float)ecart > 0.45f * (float)gs[k - 1].rect.h;
+                }
+                if (!coupe) continue;
+                const visio::Rect r = visio::Rect{gs[debut].rect.x, l.rect.y,
+                                                  gs[k - 1].rect.right() - gs[debut].rect.x,
+                                                  l.rect.h};
+                visio::LigneTexte mot{r, 0, 1.0};
+                const std::string txt = lecteur.lire(f, mot, fond);
+                if (!txt.empty() && txt != " ") {
+                    // Identifiant stable : empreinte de la fenetre et de la geometrie.
+                    uint64_t id = 1469598103934665603ull;
+                    const std::string gk = std::to_string((int)fenetre) + "|" +
+                                           std::to_string(r.x) + "," + std::to_string(r.y) + "," +
+                                           std::to_string(r.w) + "x" + std::to_string(r.h);
+                    for (unsigned char ch : gk) { id ^= ch; id *= 1099511628211ull; }
+                    std::printf("  %016lx  cliquer  %4dx%-3d @%5d,%-4d  « %s »\n", id, r.w, r.h,
+                                r.x, r.y, txt.c_str());
+                    ++total;
+                }
+                debut = k;
+            }
+        }
+        std::printf("cibles       %zu en %.1f ms\n", total,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - t5).count());
+    }
+
     if (g_lire && !lignes.empty()) {
         // Une fois par fenêtre : on apprend sa typo sur les bandes les plus fournies.
         const auto t1 = std::chrono::steady_clock::now();
@@ -172,6 +218,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--lire") == 0) g_lire = true;
         if (std::strcmp(argv[i], "--etiquettes") == 0) { g_etiquettes = true; g_lire = true; }
+        if (std::strcmp(argv[i], "--cibles") == 0) { g_cibles = true; g_lire = true; }
     }
 
     Display* d = XOpenDisplay(nullptr);
