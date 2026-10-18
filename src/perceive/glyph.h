@@ -24,6 +24,13 @@ struct Glyphe {
     uint8_t px[GP_PIX] = {0};       // intensité d'encre, 0 à 255, ligne par ligne (GP_W de large)
 };
 
+// Découpe une bande MONOSPACE sur la grille du pas : les frontières des lettres sont à
+// x_min + k·pas, donc il n'y a plus rien à deviner — les lettres soudées par
+// l'antialiasing retrouvent leur place. `cellules` reçoit l'indice de cellule de chaque
+// glyphe, ce qui donne les espaces (une cellule vide = une espace).
+std::vector<Glyphe> extraire_glyphes_pas(const Frame& f, const LigneTexte& ligne, uint32_t fond,
+                                         int pas, std::vector<int>* cellules = nullptr);
+
 // Découpe une bande de texte en glyphes.
 std::vector<Glyphe> extraire_glyphes(const Frame& f, const LigneTexte& ligne, uint32_t fond,
                                      int seuil = 24);

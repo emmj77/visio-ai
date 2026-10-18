@@ -46,6 +46,62 @@ void remplir_bitmap(const Frame& f, int x0, int y0, int x1, int y1, int fr, int 
 
 } // namespace
 
+std::vector<Glyphe> extraire_glyphes_pas(const Frame& f, const LigneTexte& ligne, uint32_t fond,
+                                         int pas, std::vector<int>* cellules) {
+    std::vector<Glyphe> out;
+    if (cellules) cellules->clear();
+    if (pas < 3 || pas > 48) return out;
+
+    const int fr = (fond >> 16) & 255, fg = (fond >> 8) & 255, fb = fond & 255;
+    auto encre = [&](int x, int y) {
+        return est_encre(f.px[(size_t)(y - f.region.y) * f.region.w + (x - f.region.x)],
+                         fr, fg, fb, 24);
+    };
+
+    // Première colonne d'encre : c'est l'origine de la grille.
+    int x_min = -1;
+    for (int x = ligne.rect.x; x < ligne.rect.right() && x_min < 0; ++x)
+        for (int y = ligne.rect.y; y < ligne.rect.bottom(); ++y)
+            if (encre(x, y)) { x_min = x; break; }
+    if (x_min < 0) return out;
+
+    // La grille ne part pas forcément de la première encre : chaque lettre a son propre
+    // talon (bearing) à gauche. On cale la phase sur la position qui coupe le MOINS
+    // d'encre — une frontière qui traverse une lettre est une erreur de découpe.
+    int phase = x_min, cout_min = 1 << 30;
+    for (int p = x_min - pas + 1; p <= x_min; ++p) {
+        int cout = 0;
+        for (int x = p; x < ligne.rect.right(); x += pas)
+            if (x >= ligne.rect.x)
+                for (int y = ligne.rect.y; y < ligne.rect.bottom(); ++y)
+                    if (encre(x, y)) ++cout;
+        if (cout < cout_min) { cout_min = cout; phase = p; }
+    }
+    x_min = phase;
+
+    for (int k = 0;; ++k) {
+        const int cx0 = x_min + k * pas;
+        if (cx0 >= ligne.rect.right()) break;
+        const int cx1 = std::min(cx0 + pas, ligne.rect.right());
+
+        int ix0 = cx1, iy0 = ligne.rect.bottom(), ix1 = -1, iy1 = -1;
+        for (int y = ligne.rect.y; y < ligne.rect.bottom(); ++y)
+            for (int x = cx0; x < cx1; ++x)
+                if (encre(x, y)) {
+                    ix0 = std::min(ix0, x); ix1 = std::max(ix1, x);
+                    iy0 = std::min(iy0, y); iy1 = std::max(iy1, y);
+                }
+        if (ix1 < 0) continue;   // cellule vide : une espace
+
+        Glyphe g;
+        g.rect = Rect{ix0, iy0, ix1 - ix0 + 1, iy1 - iy0 + 1};
+        remplir_bitmap(f, ix0, iy0, ix1 + 1, iy1 + 1, fr, fg, fb, g);
+        out.push_back(g);
+        if (cellules) cellules->push_back(k);
+    }
+    return out;
+}
+
 float ecart_glyphes(const Glyphe& a, const Glyphe& b) {
     if (a.w != b.w || a.h != b.h) return 1.0f;
     int somme = 0;

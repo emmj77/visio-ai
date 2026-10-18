@@ -462,8 +462,15 @@ void Lecteur::calibrer(const Frame& f, const std::vector<LigneTexte>& lignes, ui
 }
 
 std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond) {
-    const auto glyphes = extraire_glyphes(f, ligne, fond);
+    auto glyphes = extraire_glyphes(f, ligne, fond);
     if (glyphes.empty()) return {};
+
+    // Bande monospace : on redécoupe sur la grille du pas. Les lettres soudées par
+    // l'antialiasing retrouvent alors des frontières exactes, et les espaces deviennent
+    // des cellules vides — plus rien n'est deviné par la reconnaissance.
+    std::vector<int> cellules;
+    int pas_bande = 0;
+    const bool mono_bande = bande_monospace(glyphes, &pas_bande);
 
     // 1. La typo de cette hauteur est-elle déjà connue ET explique-t-elle cette bande ?
     //    La même hauteur peut porter deux textes différents (un titre en gras de 17 px et
@@ -518,7 +525,26 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
     police_choisie_ = polices_[it->second.first];
     taille_choisie_ = it->second.second;
 
-    // 2. lecture, glyphe par glyphe
+    // 2. Redécoupe sur la grille du pas, MAINTENANT que la typo est connue.
+    //    L'identification se fait sur les composantes connexes — une grille mal calée
+    //    fausserait les dimensions et donc le choix de la police. La grille, elle, sert à
+    //    découper : les frontières sont exactes, les lettres soudées retrouvent leur
+    //    place, et les espaces deviennent des cellules vides.
+    if (mono_bande && pas_bande >= 3 && pas_bande <= 48) {
+        int au_pas = 0, ecarts = 0;
+        for (size_t i = 0; i + 1 < glyphes.size(); ++i) {
+            const int d = glyphes[i + 1].rect.x - glyphes[i].rect.x;
+            if (d > 0 && d < 64) { ++ecarts; if (d == pas_bande) ++au_pas; }
+        }
+        // 95 % au même pas : sans ça la grille dérive d'un pixel et coupe les lettres.
+        if (ecarts && au_pas * 20 >= ecarts * 19) {
+            auto g = extraire_glyphes_pas(f, ligne, fond, pas_bande, &cellules);
+            if (g.size() >= glyphes.size()) glyphes = std::move(g);
+            else cellules.clear();
+        }
+    }
+
+    // 3. lecture, glyphe par glyphe
     std::string out;
     out.reserve(glyphes.size() + 4);
     for (size_t i = 0; i < glyphes.size(); ++i) {
@@ -544,9 +570,12 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
         // 0,30 plutôt que 0,20 : au-delà, mieux vaut rendre la lettre la plus proche que
         // perdre l'information. Un « ? » n'apprend rien à qui lit.
         const bool un_vaut = c && d_un <= 0.30f;
+        const bool grille = !cellules.empty() && cellules.size() == glyphes.size();
         // Deux lettres soudées : si une seule n'explique rien (d_un > 0,30), l'hypothèse
         // « deux » est la bonne même si elle n'écrase pas l'autre — il n'y a pas d'autre.
-        const bool deux_vaut = a && b && d_deux <= 0.35f &&
+        // Sur une grille monospace, une cellule EST une lettre : l'hypothèse « deux
+        // lettres » n'a plus lieu d'être, et c'est elle qui fabriquait les « c: ».
+        const bool deux_vaut = !grille && a && b && d_deux <= 0.35f &&
                                (d_deux < 0.85f * d_un || d_un > 0.30f);
         if (deux_vaut) {
             out += a;
@@ -556,9 +585,14 @@ std::string Lecteur::lire(const Frame& f, const LigneTexte& ligne, uint32_t fond
         }
 
         if (i + 1 < glyphes.size()) {
-            const int ecart_x = glyphes[i + 1].rect.x - glyphes[i].rect.right();
-            const float h = (float)glyphes[i].rect.h;
-            if (ecart_x > 0.45f * h) out += ' ';
+            if (grille) {
+                const int saut = cellules[i + 1] - cellules[i];
+                if (saut > 1) out.append((size_t)(saut - 1), ' ');
+            } else {
+                const int ecart_x = glyphes[i + 1].rect.x - glyphes[i].rect.right();
+                const float h = (float)glyphes[i].rect.h;
+                if (ecart_x > 0.45f * h) out += ' ';
+            }
         }
     }
     return out;
