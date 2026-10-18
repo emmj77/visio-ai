@@ -90,6 +90,27 @@ Jetons MESURES au tokenizer (o200k_base), pas estimes : une grille ASCII est sur
 d'ESPACES et un jeton encode des suites d'espaces (30 a 77 caracteres par jeton ici).
 Compter « octets / 4 » surestime le cout d'un facteur 12 — erreur payee, corrigee ici.
 
+## Le trait : orientation, et un seul caractere par run
+
+Densite seule, une diagonale de 1,5 px ressortait en chapelet de points et un cote de triangle
+en trait double. Deux mecanismes, mesures sur la page temoin (trait reel : 2 a 4 px) :
+
+- **Orientation.** Pour chaque case, les moments de l'encre donnent l'ecart-type perpendiculaire
+  a l'axe principal. Sous 3,5 px la case est traversee par un TRAIT : on la dessine alors avec
+  son orientation — `-`, `|`, `/`, `\` — calculee dans le repere de la case (10x20 px), donc
+  dans l'angle qu'on voit a l'ecran. Un rond devient une suite de `/ | \ -`, une diagonale une
+  suite de `/`.
+- **Un caractere par run de trait, par ligne.** Un cote a 51 degres traverse 1,3 case par ligne
+  (13 px pour une case de 20 px de haut) : il allumait deux caracteres par ligne et ressortait
+  double. On regroupe les cases contigues portant un trait non horizontal et on garde celle qui
+  porte le plus d'encre. Les traits horizontaux ne sont pas touches (une ligne de `-` continue).
+- **Le texte reste en densite** (`:`, `*`) : les futs des glyphes sont aussi des traits, et une
+  ligne de texte devenait un hachis de tirets.
+- **Bordure d'un cadre** : l'encre du meme trait tombe souvent dans la case voisine, d'ou des
+  `||` qui n'existent pas dans la page. Les cases voisines d'un cadre dessine sont blanchies.
+
+Cout : plan 188x52 = 616 jetons, capture + analyse 12 a 31 ms.
+
 ## Le diagnostic qui compte
 
 **La comparaison n'est pas le probleme, la decoupe l'est.** Trois essais de comparaison de

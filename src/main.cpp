@@ -241,6 +241,18 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
         const int cellx = g_pas, celly = g_pas * 2;
         const int cols = std::max(1, f.region.w / cellx);
         const int rows = std::max(1, f.region.h / celly);
+        // Les cases couvertes par une LIGNE DE TEXTE : le texte s'y dessine en densite, jamais
+        // en orientation. Sans cela les futs des glyphes sortaient en « | » et « - », et une
+        // ligne de texte devenait un hachis de tirets au lieu de « ::: ».
+        std::vector<uint8_t> dans_texte((size_t)cols * (size_t)rows, 0);
+        for (const auto& l : lignes) {
+            const int ax = std::max(0, (l.rect.x - f.region.x) / cellx);
+            const int bx = std::min(cols - 1, (l.rect.x + l.rect.w - f.region.x) / cellx);
+            const int ay = std::max(0, (l.rect.y - f.region.y) / celly);
+            const int by = std::min(rows - 1, (l.rect.y + l.rect.h - f.region.y) / celly);
+            for (int y = ay; y <= by; ++y)
+                for (int x = ax; x <= bx; ++x) dans_texte[(size_t)y * (size_t)cols + (size_t)x] = 1;
+        }
         std::vector<std::string> gr((size_t)rows, std::string((size_t)cols, ' '));
         auto nom = [](visio::Genre x) -> const char* {
             switch (x) {
@@ -255,28 +267,95 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
             }
         };
 
-        // 1. l'encre. Un pixel s'ecarte du fond ; la case prend la densite.
-        std::vector<int> encre((size_t)cols * (size_t)rows, 0);
+        // 1. LA COUCHE D'ENCRE. Deux mesures par case : la DENSITE (aplats, texte) et le
+        //    SQUELETTE (traits). Un trait fin recoit un caractere d'ORIENTATION — « - »,
+        //    « | », « / », « \ » — donc un trait continu au lieu d'un chapelet de points ;
+        //    une zone epaisse garde sa densite.
+        std::vector<int64_t> ncar((size_t)cols * (size_t)rows, 0);
         {
             const int fr = (int)((fond >> 16) & 0xFF), fg = (int)((fond >> 8) & 0xFF),
                       fb = (int)(fond & 0xFF);
+            // Moments de l'ENCRE dans chaque case, en pixels depuis le coin de la case :
+            // l'ecart-type perpendiculaire a l'axe principal dit si la case est traversee par
+            // un TRAIT (encre serree, 1-4 px) ou par du TEXTE (encre etalee sur la case).
+            std::vector<double> sx((size_t)cols * (size_t)rows, 0), sy = sx, sxx = sx,
+                                syy = sx, sxy = sx;
             for (int y = 0; y < f.region.h; ++y) {
                 const uint32_t* p = f.px.data() + (size_t)y * f.region.w;
-                const size_t ligne = (size_t)(y / celly) * (size_t)cols;
                 for (int x = 0; x < f.region.w; ++x) {
                     const int dr = std::abs((int)((p[x] >> 16) & 0xFF) - fr);
                     const int dg = std::abs((int)((p[x] >> 8) & 0xFF) - fg);
                     const int db = std::abs((int)(p[x] & 0xFF) - fb);
-                    if (dr > 16 || dg > 16 || db > 16) ++encre[ligne + (size_t)(x / cellx)];
+                    if (dr <= 16 && dg <= 16 && db <= 16) continue;
+                    const size_t k = (size_t)(y / celly) * (size_t)cols + (size_t)(x / cellx);
+                    const double u = (double)(x % cellx), v = (double)(y % celly);
+                    ++ncar[k];
+                    sx[k] += u; sy[k] += v;
+                    sxx[k] += u * u; syy[k] += v * v; sxy[k] += u * v;
                 }
             }
             for (int cy = 0; cy < rows; ++cy)
                 for (int cx = 0; cx < cols; ++cx) {
-                    const double d = (double)encre[(size_t)cy * (size_t)cols + (size_t)cx] /
-                                     (double)(cellx * celly);
-                    gr[(size_t)cy][(size_t)cx] = d >= 0.55 ? '#' : d >= 0.30 ? '*'
-                                                : d >= 0.12 ? ':' : d > 0.02 ? '.' : ' ';
+                    const size_t k = (size_t)cy * (size_t)cols + (size_t)cx;
+                    const double n = (double)ncar[k];
+                    const double d = n / (double)(cellx * celly);
+                    char c = ' ';
+                    if (n >= 6 && !dans_texte[k]) {
+                        const double ux = sx[k] / n, uy = sy[k] / n;
+                        const double vx = sxx[k] / n - ux * ux, vy = syy[k] / n - uy * uy;
+                        const double vxy = sxy[k] / n - ux * uy;
+                        const double tr = vx + vy, det = vx * vy - vxy * vxy;
+                        const double disc = std::sqrt(std::max(0.0, tr * tr / 4 - det));
+                        const double l2 = tr / 2 - disc;            // variance perpendiculaire
+                        if (l2 <= 12.0) {                           // sigma_perp <= ~3,5 px : un trait
+                            const double th = 0.5 * std::atan2(2 * vxy, vx - vy);
+                            // angle VU a l'ecran : la case fait cellx de large et celly de haut
+                            const double vu = std::atan2(std::sin(th) / celly,
+                                                         std::cos(th) / cellx) * 57.29577951308232;
+                            double a = vu;
+                            if (a > 90) a -= 180;
+                            if (a < -90) a += 180;
+                            const double aa = std::abs(a);
+                            c = aa < 22.5 ? '-' : aa > 67.5 ? '|' : (a > 0 ? '\\' : '/');
+                        }
+                    }
+                    if (c == ' ') {
+                        if (d >= 0.70) c = '#';
+                        else if (d >= 0.45) c = '*';
+                        else if (d >= 0.12) c = ':';
+                        else if (d > 0.01) c = '.';
+                    }
+                    gr[(size_t)cy][(size_t)cx] = c;
                 }
+            // UN SEUL CARACTERE PAR RUN DE TRAIT, PAR LIGNE. Un cote de triangle a 51° traverse
+            // 1,3 case par ligne (13 px pour une case de 20 px de haut) : il allumait donc deux
+            // caracteres par ligne et ressortait double. On regroupe les cases contigues portant
+            // un trait non horizontal et on ne garde que celle qui porte le plus d'encre : le
+            // cote devient une suite de « / » d'un caractere, comme un dessin a la main.
+            // Les traits horizontaux ne sont pas touches : une ligne de « - » est deja continue.
+            for (int cy = 0; cy < rows; ++cy) {
+                int x = 0;
+                while (x < cols) {
+                    const char c0 = gr[(size_t)cy][(size_t)x];
+                    if (c0 != '|' && c0 != '/' && c0 != '\\') { ++x; continue; }
+                    int fin = x;
+                    while (fin + 1 < cols) {
+                        const char c1 = gr[(size_t)cy][(size_t)fin + 1];
+                        if (c1 != '|' && c1 != '/' && c1 != '\\') break;
+                        ++fin;
+                    }
+                    if (fin > x) {
+                        int garde = x;
+                        for (int i = x + 1; i <= fin; ++i)
+                            if (ncar[(size_t)cy * (size_t)cols + (size_t)i] >
+                                ncar[(size_t)cy * (size_t)cols + (size_t)garde])
+                                garde = i;
+                        for (int i = x; i <= fin; ++i)
+                            if (i != garde) gr[(size_t)cy][(size_t)i] = ' ';
+                    }
+                    x = fin + 1;
+                }
+            }
         }
 
         std::vector<const visio::Element*> zs;
@@ -351,6 +430,29 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
             }
             gr[(size_t)y0][(size_t)x0] = '+'; gr[(size_t)y0][(size_t)x1] = '+';
             gr[(size_t)y1][(size_t)x0] = '+'; gr[(size_t)y1][(size_t)x1] = '+';
+            // L'encre du meme trait tombe souvent dans la case VOISINE (le trait de 1 px est a
+            // cheval sur la frontiere) : on la blanchit, sinon le plan montre des bordures
+            // doubles « || » qui n'existent pas dans la page.
+            for (int y = y0; y <= y1; ++y) {
+                if (x0 > 0) gr[(size_t)y][(size_t)x0 - 1] = ' ';
+                if (x1 + 1 < cols) gr[(size_t)y][(size_t)x1 + 1] = ' ';
+            }
+            for (int x = x0; x <= x1; ++x) {
+                if (y0 > 0) gr[(size_t)y0 - 1][(size_t)x] = ' ';
+                if (y1 + 1 < rows) gr[(size_t)y1 + 1][(size_t)x] = ' ';
+            }
+            // Et l'encre tombe aussi a l'INTERIEUR du rect (le rect est la boite du trait, donc
+            // le trait y est contenu sur 1-2 px) : on blanchit une case a l'interieur des bords.
+            if (x1 - x0 >= 5 && y1 - y0 >= 3) {
+                for (int y = y0 + 1; y < y1; ++y) {
+                    gr[(size_t)y][(size_t)x0 + 1] = ' ';
+                    gr[(size_t)y][(size_t)x1 - 1] = ' ';
+                }
+                for (int x = x0 + 1; x < x1; ++x) {
+                    gr[(size_t)y0 + 1][(size_t)x] = ' ';
+                    gr[(size_t)y1 - 1][(size_t)x] = ' ';
+                }
+            }
             // Etiquette : genre + debut d'identifiant, TOUJOURS rognee a la largeur du cadre,
             // sinon le plan devient illisible (la bordure disparait).
             std::string lab = std::string(" ") + nom(e->genre) + " " + id + " ";
@@ -364,6 +466,7 @@ int mode_regions(Display* d, visio::Rect zone, const char* quoi, Window fenetre)
                     "%zu formes non rectangulaires\n", cols, rows, cellx, celly, elements.size(),
                     formes);
         std::printf("encre        ' ' rien  '.' trait  ':' clairseme  '*' dense  '#' plein\n");
+        std::printf("             - | / \\ trait fin oriente (un rond, un triangle, une diagonale)\n");
         for (const auto& l : gr) std::printf("|%s|\n", l.c_str());
     }
 
