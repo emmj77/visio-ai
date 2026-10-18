@@ -68,8 +68,9 @@ Mesure, page temoin (geometrie connue, rendue par Firefox, 1880x1040) :
     distinction          ni case a cocher, ni curseur, ni bouton : tout est « zone sans texte »
     boite trop plate     resolu : un bouton de 32 px de haut ne fait pas 2 cases de plan, il
                          recoit une ligne de « = » et son nom (marqueur, pas cadre)
-    bouton a fond teinte un bouton dont le fond differe du fond de page est une REGION pleine,
-                         pas un cadre (il est dans le plan, mais comme aplat)
+    bouton a fond teinte resolu : `aplats_bordes()` retrouve la bordure d'un aplat (deux
+                         bandes autour du rect : a 1 px le trait, a 4 px la page) et rend un
+                         cadre avec la vraie couleur du trait. Mesure : 118x30 trait #a0a0a0
     bande d'outils       la barre d'un navigateur est bien une boite fermee : elle est
                          comptee comme cadre. C'est exact, ca encombre.
 
